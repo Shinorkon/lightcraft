@@ -983,6 +983,59 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
             }
         ),
+        cmd!(
+            "mask.ai.subject",
+            "Select Subject",
+            [],
+            None,
+            "{id?: maskId, op?: add|subtract|intersect, background?: bool} — selects the main subject or background using SINet",
+            has_active,
+            |s, p| {
+                let op = p.get("op").and_then(Value::as_str).unwrap_or("add");
+                let bg = bool_or(p, "background", false);
+                let param = json!({
+                    "kind": if bg { "background" } else { "subject" },
+                    "op": op,
+                });
+                if let Some(mid) = p.get("id").and_then(Value::as_u64).map(|v| v as u32).or(s.active_mask) {
+                    let mut p_add = param;
+                    p_add["id"] = json!(mid);
+                    s.execute("mask.addComponent", &p_add)
+                } else {
+                    s.execute("mask.add", &param)
+                }
+            }
+        ),
+        cmd!(
+            "mask.ai.people",
+            "Select Person and Body Parts",
+            [],
+            None,
+            "{id?: maskId, op?: add|subtract|intersect, person?: u32, parts?: [string]} — selects face/body parts using BiSeNet",
+            has_active,
+            |s, p| {
+                let op = p.get("op").and_then(Value::as_str).unwrap_or("add");
+                let person = p.get("person").and_then(Value::as_u64).unwrap_or(0) as u32;
+                let parts: Vec<String> = p
+                    .get("parts")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_else(|| vec!["skin".into(), "hair".into()]);
+                let param = json!({
+                    "kind": "people",
+                    "person": person,
+                    "parts": parts,
+                    "op": op,
+                });
+                if let Some(mid) = p.get("id").and_then(Value::as_u64).map(|v| v as u32).or(s.active_mask) {
+                    let mut p_add = param;
+                    p_add["id"] = json!(mid);
+                    s.execute("mask.addComponent", &p_add)
+                } else {
+                    s.execute("mask.add", &param)
+                }
+            }
+        ),
     ]
 }
 

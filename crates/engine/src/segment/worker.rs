@@ -441,9 +441,23 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
             }
         }
         Kind::People { person: _, parts } => {
-            let (m, enc) = encoded(state, shared, job)?;
-            let query = if parts.is_empty() { "person".to_string() } else { parts.join(" and ") };
-            Ok(text_logits(m, enc, &query)?.map(|l| SegMask::from_logits(side, &l)))
+            let bisenet_path = job.dir.join("bisenet.onnx");
+            if bisenet_path.is_file() {
+                let input = render(job)?;
+                use lightcraft_segment::backend::SegmentationBackend;
+                let mut backend = lightcraft_segment::backend::TractBackend::default();
+                backend.load_model(&bisenet_path).map_err(|e| format!("Failed to load BiSeNet model: {e}"))?;
+                let pixels = lightcraft_segment::mask::preprocess(&input.rgb, input.w, input.h, 512).map_err(|e| e.to_string())?;
+                let tensor = lightcraft_segment::backend::TensorData { shape: vec![1, 3, 512, 512], data: pixels };
+                let out = backend.infer(&tensor).map_err(|e| format!("BiSeNet inference failed: {e}"))?;
+                let indices = lightcraft_segment::bisenet::resolve_parts(&parts);
+                let combined = lightcraft_segment::bisenet::combine_logits(&out.data, 512, &indices);
+                Ok(Some(SegMask::from_logits(512, &combined)))
+            } else {
+                let (m, enc) = encoded(state, shared, job)?;
+                let query = if parts.is_empty() { "person".to_string() } else { parts.join(" and ") };
+                Ok(text_logits(m, enc, &query)?.map(|l| SegMask::from_logits(side, &l)))
+            }
         }
     }
 }

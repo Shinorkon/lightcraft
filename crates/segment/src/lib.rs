@@ -27,6 +27,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod backend;
+pub mod bisenet;
 #[cfg(not(target_arch = "wasm32"))]
 mod clip;
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,6 +83,9 @@ const _: () = assert!(MASK_SIDE == tracker::LOW_RES && INPUT == vit::IMAGE);
 
 /// The files of a model directory.
 pub const WEIGHTS_FILE: &str = "model.safetensors";
+pub const SINET_FILE: &str = "sinet.onnx";
+pub const MODNET_FILE: &str = "modnet.onnx";
+pub const BISENET_FILE: &str = "bisenet.onnx";
 
 /// Whether `dir` holds a usable checkpoint.
 pub fn is_model_dir(dir: &Path) -> bool {
