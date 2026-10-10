@@ -22,7 +22,7 @@ pub fn linear(i: usize, o: usize, vb: VarBuilder) -> Result<Linear> {
 
 /// Largest attention-score block computed at once (elements): the 5184-token global layers
 /// would otherwise need ~1.7 GB for all 16 heads.
-const SCORE_BLOCK: usize = 64 << 20;
+const SCORE_BLOCK: usize = 16 << 20;
 
 /// Scaled dot-product attention on `[B, H, L, d]` tensors, with an optional additive bias
 /// broadcastable to `[B, H, Lq, Lk]`. Heads are processed in groups to bound memory.
@@ -39,12 +39,13 @@ pub fn sdpa(q: &Tensor, k: &Tensor, v: &Tensor, bias: Option<&Tensor>, scale: f6
     let mut start = 0;
     while start < h {
         let n = group.min(h - start);
-        let qs = q.narrow(1, start, n)?;
-        let ks = k.narrow(1, start, n)?;
-        let vs = v.narrow(1, start, n)?;
+        let qs = q.narrow(1, start, n)?.contiguous()?;
+        let ks = k.narrow(1, start, n)?.contiguous()?;
+        let vs = v.narrow(1, start, n)?.contiguous()?;
         let mut att = (qs.matmul(&ks.t()?)? * scale)?;
         if let Some(bias) = bias {
-            let bs = if bias_heads > 1 { bias.narrow(1, start, n)? } else { bias.clone() };
+            let bs = if bias.dtype() != att.dtype() { bias.to_dtype(att.dtype())? } else { bias.clone() };
+            let bs = if bias_heads > 1 { bs.narrow(1, start, n)?.contiguous()? } else { bs };
             att = att.broadcast_add(&bs)?;
         }
         let att = candle_nn::ops::softmax_last_dim(&att)?;
@@ -239,4 +240,74 @@ pub fn cxcywh_to_xyxy(b: &Tensor) -> Result<Tensor> {
 /// A tensor's values as `f32` on the CPU.
 pub fn to_vec(t: &Tensor) -> Result<Vec<f32>> {
     Ok(t.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdpa_batched_subgroups() -> Result<()> {
+        let dev = Device::Cpu;
+        let q = Tensor::zeros((9, 16, 576, 64), DType::F32, &dev)?;
+        let k = Tensor::zeros((9, 16, 576, 64), DType::F32, &dev)?;
+        let v = Tensor::zeros((9, 16, 576, 64), DType::F32, &dev)?;
+        let o = sdpa(&q, &k, &v, None, 0.125)?;
+        assert_eq!(o.dims4()?, (9, 16, 576, 64));
+
+        let bias = Tensor::zeros((9, 16, 576, 576), DType::F32, &dev)?;
+        let o_bias = sdpa(&q, &k, &v, Some(&bias), 0.125)?;
+        assert_eq!(o_bias.dims4()?, (9, 16, 576, 64));
+        Ok(())
+    }
+
+    #[test]
+    fn test_device() {
+        let d = crate::best_device();
+        #[cfg(feature = "cuda")]
+        assert!(matches!(d, candle_core::Device::Cuda(_)));
+        #[cfg(all(not(feature = "cuda"), not(target_os = "macos")))]
+        assert!(matches!(d, candle_core::Device::Cpu));
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn cuda_bf16_sdpa() -> Result<()> {
+        let dev = match Device::new_cuda(0) {
+            Ok(d) => d,
+            Err(_) => return Ok(()),
+        };
+        let q = Tensor::zeros((1, 8, 200, 64), DType::BF16, &dev)?;
+        let k = Tensor::zeros((1, 8, 200, 64), DType::BF16, &dev)?;
+        let v = Tensor::zeros((1, 8, 200, 64), DType::BF16, &dev)?;
+        let o = sdpa(&q, &k, &v, None, 0.125)?;
+        assert_eq!(o.dims4()?, (1, 8, 200, 64));
+
+        // Test conv2d
+        let x = Tensor::zeros((1, 3, 14, 14), DType::BF16, &dev)?;
+        let w = Tensor::zeros((16, 3, 3, 3), DType::BF16, &dev)?;
+        let c = x.conv2d(&w, 1, 1, 1, 1)?;
+        assert_eq!(c.dims4()?, (1, 16, 14, 14));
+
+        // Test layer_norm
+        let ln_x = Tensor::zeros((1, 10, 64), DType::BF16, &dev)?;
+        let ln_w = Tensor::ones(64, DType::BF16, &dev)?;
+        let ln_b = Tensor::zeros(64, DType::BF16, &dev)?;
+        let ln_o = candle_nn::ops::layer_norm(&ln_x, &ln_w, &ln_b, 1e-5)?;
+        assert_eq!(ln_o.dims3()?, (1, 10, 64));
+
+        // Test group_norm
+        let gn_x = Tensor::zeros((1, 16, 14, 14), DType::BF16, &dev)?;
+        let gn_w = Tensor::ones(16, DType::BF16, &dev)?;
+        let gn_b = Tensor::zeros(16, DType::BF16, &dev)?;
+        let gn = candle_nn::GroupNorm::new(gn_w, gn_b, 16, 4, 1e-5)?;
+        let gn_o = gn.forward(&gn_x)?;
+        assert_eq!(gn_o.dims4()?, (1, 16, 14, 14));
+
+        // Test clamp on BF16
+        let cl_x = Tensor::zeros((1, 10), DType::BF16, &dev)?;
+        let cl_o = cl_x.clamp(0.001f32, 10.0f32)?;
+        assert_eq!(cl_o.dims2()?, (1, 10));
+        Ok(())
+    }
 }

@@ -165,14 +165,14 @@ impl Detector {
         let last = levels.last().ok_or_else(|| Error::Model("detector neck".into()))?;
         let (_, _, side, _) = last.dims4()?;
         let flat = last.flatten_from(2)?.transpose(1, 2)?.contiguous()?;
-        let pos = sine_grid(side, side, HIDDEN / 2, &self.device)?.flatten_from(2)?.transpose(1, 2)?.contiguous()?;
+        let pos = sine_grid(side, side, HIDDEN / 2, &self.device)?.to_dtype(backbone.dtype())?.flatten_from(2)?.transpose(1, 2)?.contiguous()?;
         Ok(Features { levels, flat, pos, side })
     }
 
     /// Box relative-position bias `[1, heads, 1 + 200, side²]` for reference boxes (cx, cy, w, h).
     fn rpb(&self, boxes: &Tensor, side: usize) -> Result<Tensor> {
         let xyxy = cxcywh_to_xyxy(boxes)?.squeeze(0)?; // [200, 4]
-        let coords = Tensor::arange(0u32, side as u32, &self.device)?.to_dtype(candle_core::DType::F32)?.affine(1.0 / side as f64, 0.0)?;
+        let coords = Tensor::arange(0u32, side as u32, &self.device)?.to_dtype(boxes.dtype())?.affine(1.0 / side as f64, 0.0)?;
         let coords = coords.reshape((1, side, 1))?;
         let log_scale = |d: Tensor| -> Result<Tensor> {
             let d = (d * 8.0)?;
@@ -193,9 +193,9 @@ impl Detector {
     fn box_sine(&self, boxes: &Tensor) -> Result<Tensor> {
         let feats = HIDDEN / 2;
         let dim_t: Vec<f32> = (0..feats).map(|i| 10000f64.powf(2.0 * (i / 2) as f64 / feats as f64) as f32).collect();
-        let dim_t = Tensor::from_vec(dim_t, (1, 1, feats), &self.device)?;
+        let dim_t = Tensor::from_vec(dim_t, (1, 1, feats), &self.device)?.to_dtype(boxes.dtype())?;
         let even: Vec<f32> = (0..feats).map(|i| if i % 2 == 0 { 1.0 } else { 0.0 }).collect();
-        let even = Tensor::from_vec(even, (1, 1, feats), &self.device)?;
+        let even = Tensor::from_vec(even, (1, 1, feats), &self.device)?.to_dtype(boxes.dtype())?;
         let one = |i: usize| -> Result<Tensor> {
             let p = (boxes.narrow(D::Minus1, i, 1)? * (2.0 * std::f64::consts::PI))?.broadcast_div(&dim_t)?;
             Ok((p.sin()?.broadcast_mul(&even)? + p.cos()?.broadcast_mul(&(1.0 - &even)?)?)?)
@@ -249,7 +249,7 @@ impl Detector {
         let t = self.score_text_ln.forward(&(self.score_text_mlp.forward(&text)? + &text)?)?;
         let w: Vec<f32> = valid.iter().map(|v| if *v { 1.0 } else { 0.0 }).collect();
         let count = w.iter().sum::<f32>().max(1.0);
-        let w = Tensor::from_vec(w, (1, valid.len(), 1), &self.device)?;
+        let w = Tensor::from_vec(w, (1, valid.len(), 1), &self.device)?.to_dtype(text.dtype())?;
         let pooled = (t.broadcast_mul(&w)?.sum(1)? / f64::from(count))?; // [1, 256]
         let pt = self.score_text_proj.forward(&pooled)?; // [1, 256]
         let pq = self.score_query_proj.forward(&queries)?; // [1, 200, 256]
@@ -294,7 +294,18 @@ impl Detector {
 pub fn merge(out: &Output, threshold: f32) -> Option<Prediction> {
     let s = |x: f32| 1.0 / (1.0 + (-x).exp());
     let presence = s(out.presence);
-    let keep: Vec<(usize, f32)> = out.logits.iter().enumerate().map(|(i, l)| (i, s(*l) * presence)).filter(|(_, p)| *p > threshold).collect();
+    let mut keep: Vec<(usize, f32)> = out.logits.iter().enumerate().map(|(i, l)| (i, s(*l) * presence)).filter(|(_, p)| *p > threshold).collect();
+    if keep.is_empty()
+        && let Some((best_idx, best_score)) = out
+            .logits
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (i, s(*l) * presence))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        && best_score > 0.28
+    {
+        keep.push((best_idx, best_score));
+    }
     let best = keep.iter().map(|k| k.1).fold(0f32, f32::max);
     let mut merged: Option<Vec<f32>> = None;
     for (i, _) in &keep {

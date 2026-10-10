@@ -49,9 +49,9 @@ fn kind_label(s: &MaskShape) -> (&'static str, Icon) {
         MaskShape::ColorRange { .. } => ("Color Range", Icon::Picker),
         MaskShape::LuminanceRange { .. } => ("Luminance Range", Icon::Sliders),
         MaskShape::DepthRange { .. } => ("Depth Range", Icon::Sliders),
-        MaskShape::Subject => ("Subject", Icon::Subject),
+        MaskShape::Subject { .. } => ("Subject", Icon::Subject),
         MaskShape::Sky => ("Sky", Icon::Sky),
-        MaskShape::Background => ("Background", Icon::Subject),
+        MaskShape::Background { .. } => ("Background", Icon::Subject),
         MaskShape::Object { .. } => ("Object", Icon::Subject),
         MaskShape::Prompt { .. } => ("Describe", Icon::Subject),
         MaskShape::People { .. } => ("People", Icon::Subject),
@@ -93,10 +93,11 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 10 }).show(ui, |ui| {
         ui.label(egui::RichText::new(crate::i18n::tr("Create New Mask")).color(t.text_dim));
         ui.add_space(6.0);
-        let tiles: [(&str, &str, Icon); 10] = [
+        let tiles: [(&str, &str, Icon); 11] = [
             ("object", "Object", Icon::Subject),
             ("prompt", "Describe", Icon::Subject),
             ("subject", "Subject", Icon::Subject),
+            ("people", "People", Icon::Subject),
             ("sky", "Sky", Icon::Sky),
             ("background", "Background", Icon::Subject),
             ("brush", "Brush", Icon::Brush),
@@ -129,6 +130,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                 ui.painter().galley(at, g, t.text_dim);
                 let resp = if elided { resp.on_hover_text(label) } else { resp };
                 if resp.clicked() {
+                    if *kind != "prompt" {
+                        app.ui.describe = None;
+                    }
                     match *kind {
                         "colorRange" => {
                             // an empty colour range; clicking the photo samples it
@@ -143,6 +147,12 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                         }
                         "linear" | "radial" => {
                             app.ui.tool = kind.to_string();
+                            let _ = app.run("mask.add", json!({"kind": kind}));
+                        }
+                        "subject" | "background" | "people" => {
+                            if needs_model(app, kind, "new") {
+                                return;
+                            }
                             let _ = app.run("mask.add", json!({"kind": kind}));
                         }
                         k => {
@@ -709,6 +719,13 @@ pub(crate) fn begin_ai(app: &mut LightcraftApp, kind: &str, op: &str) -> Result<
             app.ui.tool = "object".into();
             Ok(r)
         }
+        "subject" | "background" | "people" => {
+            if op == "new" {
+                app.run("mask.add", json!({"kind": kind}))
+            } else {
+                app.run("mask.addComponent", json!({"op": op, "kind": kind}))
+            }
+        }
         _ => {
             app.ui.describe = Some((op.to_string(), String::new()));
             Ok(serde_json::Value::Null)
@@ -737,7 +754,17 @@ fn describe_field(app: &mut LightcraftApp, ui: &mut egui::Ui, new_mask: bool) {
         "intersect" => "Describe what to keep",
         _ => "Describe what to select",
     };
-    ui.label(crate::i18n::tr(prompt));
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if text_button(ui, "maskDescribeClose", "✕", false).on_hover_text(crate::i18n::tr("Close")).clicked() {
+            app.ui.describe = None;
+        }
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.add(egui::Label::new(crate::i18n::tr(prompt)).truncate());
+        });
+    });
+    if app.ui.describe.is_none() {
+        return;
+    }
     let mut submit = false;
     // the (translated) Select button is placed first, at the right; the field takes what is left
     ui.allocate_ui_with_layout(vec2(ui.available_width(), 24.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {

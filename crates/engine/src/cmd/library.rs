@@ -111,6 +111,8 @@ pub fn import_batch_done(s: &mut Session, report: crate::import::ImportReport, m
     // photos an import restored from Recently Deleted take part like new ones (album, selection)
     let imported: Vec<u64> =
         ["imported", "restored"].iter().flat_map(|k| report[*k].as_array().into_iter().flatten().filter_map(Value::as_u64)).collect();
+    let photo_ids: Vec<PhotoId> = imported.iter().map(|id| PhotoId(*id)).collect();
+    s.segment_enqueue_precompute(&photo_ids);
     if album.is_none()
         && let Some(name) = album_name
         && !imported.is_empty()

@@ -103,7 +103,7 @@ fn assert_inside_right_panel(h: &Headless, what: &str) {
 #[test]
 fn masking_contents_fit_the_right_panel_at_any_width() {
     let mut h = demo([1400.0, 900.0], json!({"view": "detail", "right": "masking"}));
-    for (kind, op) in [("subject", None), ("linear", None), ("luminanceRange", Some("subtract")), ("radial", Some("intersect"))] {
+    for (kind, op) in [("brush", None), ("linear", None), ("luminanceRange", Some("subtract")), ("radial", Some("intersect"))] {
         let (command, params) = match op {
             None => ("mask.add", json!({"kind": kind})),
             Some(op) => ("mask.addComponent", json!({"kind": kind, "op": op})),
@@ -152,6 +152,7 @@ fn masking_contents_fit_the_right_panel_at_any_width() {
             assert_inside_right_panel(&h, &what);
         }
     }
+    h.settle(SETTLE);
 }
 
 #[test]

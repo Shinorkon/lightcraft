@@ -26,6 +26,8 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod backend;
+pub mod bisenet;
 #[cfg(not(target_arch = "wasm32"))]
 mod clip;
 #[cfg(not(target_arch = "wasm32"))]
@@ -81,15 +83,27 @@ const _: () = assert!(MASK_SIDE == tracker::LOW_RES && INPUT == vit::IMAGE);
 
 /// The files of a model directory.
 pub const WEIGHTS_FILE: &str = "model.safetensors";
+pub const SINET_FILE: &str = "sinet.onnx";
+pub const MODNET_FILE: &str = "modnet.onnx";
+pub const BISENET_FILE: &str = "bisenet.onnx";
 
-/// Whether `dir` holds a usable checkpoint.
-pub fn is_model_dir(dir: &Path) -> bool {
+/// Whether `dir` holds the SAM 3 checkpoint files.
+pub fn is_sam3_dir(dir: &Path) -> bool {
     dir.join(WEIGHTS_FILE).is_file() && dir.join("vocab.json").is_file() && dir.join("merges.txt").is_file()
 }
 
+/// Whether `dir` holds any usable AI model checkpoint (SAM 3, SINet, or BiSeNet).
+pub fn is_model_dir(dir: &Path) -> bool {
+    is_sam3_dir(dir) || dir.join(SINET_FILE).is_file() || dir.join(BISENET_FILE).is_file()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-/// The best device here: Metal on macOS (when a GPU is available), else the CPU.
+/// The best device here: CUDA when available, Metal on macOS (when a GPU is available), else the CPU.
 pub fn best_device() -> Device {
+    #[cfg(feature = "cuda")]
+    if let Ok(d) = Device::new_cuda(0) {
+        return d;
+    }
     #[cfg(target_os = "macos")]
     if let Ok(d) = Device::new_metal(0) {
         return d;
@@ -102,6 +116,7 @@ pub fn best_device() -> Device {
 pub struct Sam3 {
     dir: PathBuf,
     device: Device,
+    dtype: DType,
     weights: Arc<weights::Weights>,
     backbone: vit::Vit,
     tracker_neck: Option<neck::Neck>,
@@ -135,20 +150,25 @@ impl Sam3 {
     }
 
     pub fn load_on(dir: &Path, device: Device) -> Result<Self> {
-        if !is_model_dir(dir) {
+        if !is_sam3_dir(dir) {
             return Err(Error::Missing(dir.to_path_buf()));
         }
+        let dtype = if device.is_cuda() { DType::BF16 } else { DType::F32 };
         let weights = weights::Weights::open(&dir.join(WEIGHTS_FILE))?;
-        let backbone = vit::Vit::new(Self::vb(&weights, &device).pp("detector_model.vision_encoder.backbone"))?;
-        Ok(Self { dir: dir.to_path_buf(), device, weights, backbone, tracker_neck: None, tracker: None, detector: None, tokenizer: None })
+        let backbone = vit::Vit::new(Self::vb(&weights, &device, dtype).pp("detector_model.vision_encoder.backbone"))?;
+        Ok(Self { dir: dir.to_path_buf(), device, dtype, weights, backbone, tracker_neck: None, tracker: None, detector: None, tokenizer: None })
     }
 
-    fn vb<'a>(w: &Arc<weights::Weights>, device: &Device) -> VarBuilder<'a> {
-        VarBuilder::from_backend(Box::new(weights::Backend(w.clone())), DType::F32, device.clone())
+    fn vb<'a>(w: &Arc<weights::Weights>, device: &Device, dtype: DType) -> VarBuilder<'a> {
+        VarBuilder::from_backend(Box::new(weights::Backend(w.clone())), dtype, device.clone())
     }
 
     pub fn device(&self) -> &Device {
         &self.device
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
     }
 
     /// Run the backbone on an RGB image (8-bit, row-major, `w × h`), stretched to the square
@@ -161,15 +181,16 @@ impl Sam3 {
 
     /// Run the backbone on preprocessed pixels `[1, 3, 1008, 1008]` (−1..1).
     pub fn encode_pixels(&self, pixels: &Tensor) -> Result<Encoded> {
-        Ok(Encoded { backbone: self.backbone.forward(&pixels.to_device(&self.device)?)?, tracker: None, detector: None })
+        let pixels = pixels.to_dtype(self.dtype)?.to_device(&self.device)?;
+        Ok(Encoded { backbone: self.backbone.forward(&pixels)?, tracker: None, detector: None })
     }
 
     fn tracker_parts(&mut self) -> Result<(&neck::Neck, &tracker::Tracker)> {
         if self.tracker_neck.is_none() {
-            self.tracker_neck = Some(neck::Neck::new(Self::vb(&self.weights, &self.device).pp("tracker_neck"))?);
+            self.tracker_neck = Some(neck::Neck::new(Self::vb(&self.weights, &self.device, self.dtype).pp("tracker_neck"))?);
         }
         if self.tracker.is_none() {
-            self.tracker = Some(tracker::Tracker::new(Self::vb(&self.weights, &self.device).pp("tracker_model"))?);
+            self.tracker = Some(tracker::Tracker::new(Self::vb(&self.weights, &self.device, self.dtype).pp("tracker_model"))?);
         }
         match (&self.tracker_neck, &self.tracker) {
             (Some(n), Some(t)) => Ok((n, t)),
@@ -205,7 +226,7 @@ impl Sam3 {
 
     fn detector_parts(&mut self) -> Result<(&detector::Detector, &tokenizer::Tokenizer)> {
         if self.detector.is_none() {
-            self.detector = Some(detector::Detector::new(Self::vb(&self.weights, &self.device).pp("detector_model"))?);
+            self.detector = Some(detector::Detector::new(Self::vb(&self.weights, &self.device, self.dtype).pp("detector_model"))?);
         }
         if self.tokenizer.is_none() {
             self.tokenizer = Some(tokenizer::Tokenizer::load(&self.dir)?);

@@ -15,6 +15,9 @@
 //! commands return at once and [`Session::segment_poll`] applies the results; without it (CLI,
 //! MCP, tests) they wait for the worker.
 
+pub mod cache;
+#[cfg(feature = "sam")]
+pub mod cloud;
 #[cfg(feature = "sam")]
 mod download;
 #[cfg(feature = "sam")]
@@ -64,6 +67,14 @@ pub(crate) enum Tag {
     NewPrompt { photo: PhotoId, mask: Option<u32>, op: String, name: Option<String>, text: String },
     /// A zoomed-in pass for a component, computed from `shape` (without its detail).
     Detail { photo: PhotoId, mask: u32, comp: usize, shape: MaskShape },
+    /// Subject segmentation using SINet.
+    Subject { photo: PhotoId, mask: Option<u32>, op: String, name: Option<String>, background: bool },
+    /// People face parsing.
+    People { photo: PhotoId, mask: Option<u32>, op: String, person: u32, parts: Vec<String> },
+    /// Edge refinement using MODNet.
+    Refine { photo: PhotoId, mask: u32 },
+    /// Background precomputation for subject mask.
+    Precompute { photo: PhotoId },
 }
 
 /// The model input: 8-bit RGB.
@@ -114,6 +125,26 @@ pub struct DownloadStatus {
     pub finished: bool,
 }
 
+/// Configuration for AI masking: local vs cloud inference.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SegmentConfig {
+    pub provider: String,
+    pub cloud_service: String,
+    pub cloud_key: String,
+    pub cloud_endpoint: String,
+}
+
+impl Default for SegmentConfig {
+    fn default() -> Self {
+        Self {
+            provider: "local".to_string(),
+            cloud_service: "fal".to_string(),
+            cloud_key: std::env::var("FAL_KEY").or_else(|_| std::env::var("LIGHTCRAFT_CLOUD_KEY")).unwrap_or_default(),
+            cloud_endpoint: std::env::var("LIGHTCRAFT_SAM3_REMOTE").unwrap_or_default(),
+        }
+    }
+}
+
 /// The model (on its worker thread), the download, and AI mask requests in flight.
 pub struct Segmenter {
     /// Where the `facebook/sam3` files live (set by the app; `None`: no AI masks).
@@ -123,6 +154,12 @@ pub struct Segmenter {
     /// Run requests in the background and apply them in [`Session::segment_poll`] (the
     /// desktop app); otherwise commands wait for their result (CLI, MCP, tests).
     pub background: bool,
+    /// AI masking configuration (local models vs cloud API).
+    pub config: SegmentConfig,
+    /// In-memory and on-disk precomputed mask cache.
+    pub cache: cache::MaskCache,
+    /// Photos waiting for background mask precomputation.
+    pub precompute_queue: Vec<PhotoId>,
     pending: Option<PendingClicks>,
     messages: Vec<String>,
     #[cfg(feature = "sam")]
@@ -141,6 +178,9 @@ impl Default for Segmenter {
             dir: None,
             mirrors_file: None,
             background: false,
+            config: SegmentConfig::default(),
+            cache: cache::MaskCache::default(),
+            precompute_queue: Vec::new(),
             pending: None,
             messages: Vec::new(),
             #[cfg(feature = "sam")]
@@ -238,8 +278,11 @@ impl Segmenter {
             return Err("AI masks are not available in this build".into());
         }
         #[cfg(feature = "sam")]
-        if lightcraft_segment::remote::configured().is_some() {
+        if lightcraft_segment::remote::configured().is_some() || (self.config.provider == "cloud" && !self.config.cloud_key.is_empty()) {
             return Ok(PathBuf::new());
+        }
+        if self.config.provider == "cloud" {
+            return Err("Cloud AI masking is enabled, but no API key is configured. Please enter your API key in Settings (⌘,) ▸ AI Masking, or choose Local Models.".into());
         }
         let dir = self.dir.clone().ok_or("no folder is set for the SAM 3 model")?;
         if self.installed() {
@@ -411,7 +454,16 @@ impl Session {
                 job
             }
         };
-        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply })
+        Ok(worker::Job {
+            dir,
+            key: if region.is_some() { 0 } else { key },
+            render: Some(render),
+            missing,
+            kind,
+            tag,
+            reply,
+            config: self.segmenter.config.clone(),
+        })
     }
 
     /// Send a request and wait for its result (CLI, MCP, tests; or when not in background mode).
@@ -528,6 +580,183 @@ impl Session {
         }
     }
 
+    /// Segment the main subject on photo `id`, waiting for the model.
+    pub fn segment_subject(&mut self, id: PhotoId, _background: bool) -> Result<Option<SegMask>, String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            self.segment_wait(id, worker::Kind::Subject, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = id;
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Retrieve a precomputed mask from cache (memory or disk), if present.
+    pub fn segment_cached(&self, id: PhotoId, kind: &str) -> Option<SegMask> {
+        let dir = self.masks_dir();
+        self.segmenter.cache.get(dir.as_deref(), id, kind)
+    }
+
+    /// Store a mask in the library's on-disk and in-memory cache.
+    pub fn segment_store_cache(&self, id: PhotoId, kind: &str, seg: &SegMask) {
+        let dir = self.masks_dir();
+        self.segmenter.cache.store(dir.as_deref(), id, kind, seg);
+    }
+
+    /// Queue photos for background AI mask precomputation (e.g. upon import).
+    pub fn segment_enqueue_precompute(&mut self, ids: &[PhotoId]) {
+        self.segmenter.precompute_queue.extend(ids.iter().copied());
+    }
+
+    /// Process the next item in the precompute queue when the worker is idle.
+    pub fn segment_pump_precompute(&mut self) {
+        #[cfg(feature = "sam")]
+        {
+            if self.segmenter.dir.is_none() || !self.segmenter.background || self.segmenter.busy() {
+                return;
+            }
+            while let Some(photo) = self.segmenter.precompute_queue.pop() {
+                if self.catalog.photo(photo).is_none() {
+                    continue;
+                }
+                if self.segment_cached(photo, "subject").is_some() {
+                    continue;
+                }
+                let tag = Tag::Precompute { photo };
+                let _ = self.segment_queue(photo, worker::Kind::Subject, tag, None);
+                break;
+            }
+        }
+    }
+
+    /// Apply a subject or background segmentation directly to develop settings.
+    pub(crate) fn apply_subject_seg(
+        &mut self,
+        photo: PhotoId,
+        mask: Option<u32>,
+        op: String,
+        name: Option<String>,
+        background: bool,
+        seg: SegMask,
+    ) -> Result<Option<u32>, String> {
+        let Ok(seg_val) = serde_json::to_value(seg) else { return Err("failed to serialize segmentation".into()) };
+        let kind = if background { "background" } else { "subject" };
+        let mut p = serde_json::json!({"kind": kind, "seg": seg_val});
+        if let Some(n) = name {
+            p["name"] = serde_json::json!(n);
+        }
+        let r = match mask {
+            None => self.execute("mask.add", &p),
+            Some(m) => {
+                if !self.develop_of(photo).is_some_and(|d| d.masks.iter().any(|x| x.id == m)) {
+                    return Err("The mask was removed before the selection was found.".into());
+                }
+                self.active_mask = Some(m);
+                p["op"] = serde_json::json!(op);
+                self.execute("mask.addComponent", &p)
+            }
+        };
+        match r {
+            Ok(val) => {
+                let active = val.get("activeMask").and_then(serde_json::Value::as_u64).map(|am| am as u32);
+                if let Some(am) = active {
+                    self.active_mask = Some(am);
+                }
+                Ok(active)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Background mode: queue a Subject selection (instantly returns if cached).
+    pub(crate) fn segment_subject_later(
+        &mut self,
+        id: PhotoId,
+        mask: Option<u32>,
+        op: String,
+        name: Option<String>,
+        background: bool,
+    ) -> Result<(), String> {
+        let kind = if background { "background" } else { "subject" };
+        if let Some(seg) = self.segment_cached(id, kind) {
+            let _ = self.apply_subject_seg(id, mask, op, name, background, seg)?;
+            return Ok(());
+        }
+
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            let tag = Tag::Subject { photo: id, mask, op, name, background };
+            self.segment_queue(id, worker::Kind::Subject, tag, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask, op, name, background);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Segment a person / body parts on photo `id`, waiting for the model.
+    pub fn segment_people(&mut self, id: PhotoId, person: u32, parts: &[String]) -> Result<Option<SegMask>, String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            self.segment_wait(id, worker::Kind::People { person, parts: parts.to_vec() }, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, person, parts);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Background mode: queue a People selection.
+    pub(crate) fn segment_people_later(&mut self, id: PhotoId, mask: Option<u32>, op: String, person: u32, parts: Vec<String>) -> Result<(), String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            let tag = Tag::People { photo: id, mask, op, person, parts: parts.clone() };
+            self.segment_queue(id, worker::Kind::People { person, parts }, tag, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask, op, person, parts);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Edge refinement for a mask using MODNet.
+    pub fn segment_refine(&mut self, id: PhotoId, mask: u32) -> Result<Option<SegMask>, String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            self.segment_wait(id, worker::Kind::Refine { mask_id: mask }, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Background mode: queue an Edge refinement for a mask.
+    pub(crate) fn segment_refine_later(&mut self, id: PhotoId, mask: u32) -> Result<(), String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            let tag = Tag::Refine { photo: id, mask };
+            self.segment_queue(id, worker::Kind::Refine { mask_id: mask }, tag, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
     /// Start a zoomed-in pass for component `comp` of mask `mask` on photo `id` (an Object or
     /// Describe selection): the photo around the selection is rendered at a higher resolution
     /// and segmented again. In background mode [`Session::segment_poll`] applies the result;
@@ -589,6 +818,7 @@ impl Session {
             // clicks whose request was lost (the worker restarted) aren't pending forever
             if idle {
                 self.segmenter.pending = None;
+                self.segment_pump_precompute();
             }
         }
         polled
@@ -656,7 +886,10 @@ impl Session {
                     }
                 };
                 match r {
-                    Ok(_) => {
+                    Ok(val) => {
+                        if let Some(am) = val.get("activeMask").and_then(serde_json::Value::as_u64) {
+                            self.active_mask = Some(am as u32);
+                        }
                         polled.changed = true;
                         polled.refine = self.active_mask;
                     }
@@ -682,6 +915,82 @@ impl Session {
                 match self.set_develop(photo, d, "AI Mask Detail") {
                     Ok(()) => polled.changed = true,
                     Err(e) => log::warn!("AI mask detail: {e}"),
+                }
+            }
+            Tag::Subject { photo, mask, op, name, background } => {
+                let seg = match o.result {
+                    Ok(Some(seg)) => seg,
+                    Ok(None) => return polled.messages.push("No subject found in this photo.".into()),
+                    Err(e) => return polled.messages.push(e),
+                };
+                let kind = if background { "background" } else { "subject" };
+                self.segment_store_cache(photo, kind, &seg);
+                if self.active() != Some(photo) {
+                    return polled.messages.push("The photo changed before the subject was segmented.".into());
+                }
+                match self.apply_subject_seg(photo, mask, op, name, background, seg) {
+                    Ok(am) => {
+                        polled.changed = true;
+                        polled.refine = am;
+                    }
+                    Err(e) => polled.messages.push(e),
+                }
+            }
+            Tag::Precompute { photo } => {
+                if let Ok(Some(seg)) = o.result {
+                    self.segment_store_cache(photo, "subject", &seg);
+                }
+            }
+            Tag::People { photo, mask, op, person, parts } => {
+                let seg = match o.result {
+                    Ok(Some(seg)) => seg,
+                    Ok(None) => return polled.messages.push("No person found in this photo.".into()),
+                    Err(e) => return polled.messages.push(e),
+                };
+                if self.active() != Some(photo) {
+                    return polled.messages.push("The photo changed before the person was segmented.".into());
+                }
+                let Ok(seg_val) = serde_json::to_value(seg) else { return };
+                let mut p = serde_json::json!({"kind": "people", "person": person, "parts": parts, "seg": seg_val});
+                let r = match mask {
+                    None => self.execute("mask.add", &p),
+                    Some(m) => {
+                        if !self.develop_of(photo).is_some_and(|d| d.masks.iter().any(|x| x.id == m)) {
+                            return polled.messages.push("The mask was removed before the selection was found.".into());
+                        }
+                        self.active_mask = Some(m);
+                        p["op"] = serde_json::json!(op);
+                        self.execute("mask.addComponent", &p)
+                    }
+                };
+                match r {
+                    Ok(val) => {
+                        if let Some(am) = val.get("activeMask").and_then(serde_json::Value::as_u64) {
+                            self.active_mask = Some(am as u32);
+                        }
+                        polled.changed = true;
+                    }
+                    Err(e) => polled.messages.push(e.to_string()),
+                }
+            }
+            Tag::Refine { photo, mask } => {
+                let seg = match o.result {
+                    Ok(Some(seg)) => seg,
+                    Ok(None) => return,
+                    Err(e) => return polled.messages.push(e),
+                };
+                let Some(d) = self.develop_of(photo) else { return };
+                let mut d = (*d).clone();
+                let Some(m) = d.masks.iter_mut().find(|m| m.id == mask) else { return };
+                if let Some(c) = m.components.first_mut() {
+                    match &mut c.shape {
+                        MaskShape::Subject { seg: s } | MaskShape::Background { seg: s } | MaskShape::People { seg: s, .. } => *s = Some(seg),
+                        _ => return,
+                    }
+                }
+                match self.set_develop(photo, d, "AI Mask Refine") {
+                    Ok(()) => polled.changed = true,
+                    Err(e) => polled.messages.push(e.to_string()),
                 }
             }
         }

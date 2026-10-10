@@ -26,6 +26,7 @@ pub const TABS: &[(&str, &str)] = &[
     ("interface", "Interface"),
     ("faces", "Faces"),
     ("denoise", "AI Denoise"),
+    ("masking", "AI Masking"),
 ];
 
 /// Thumbnail cache sizes offered (MB).
@@ -55,6 +56,7 @@ pub fn body(app: &mut LightcraftApp, ui: &mut egui::Ui, tab: &mut String) {
         "interface" => interface_tab(app, ui, &t),
         "faces" => super::faces::settings_tab(app, ui, &t),
         "denoise" => super::denoise::settings_tab(app, ui, &t),
+        "masking" => masking_tab(app, ui, &t),
         _ => general_tab(app, ui, &t),
     }
 }
@@ -675,4 +677,126 @@ pub fn display_profile(app: &mut LightcraftApp, p: &Value) -> Result<Value, Stri
         Some(d) => d.describe(),
         None => json!({"path": null, "description": "sRGB (no display profile)"}),
     })
+}
+
+// ---------------------------------------------------------------------------- AI Masking
+
+fn masking_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
+    heading(ui, t, "AI Masking");
+    hint(
+        ui,
+        t,
+        "Select subjects, people and objects in photos using AI models. Choose between offline local inference or instant cloud acceleration.",
+    );
+
+    heading(ui, t, "Inference Mode");
+    row(ui, t, "Backend", |ui| {
+        choices(
+            ui,
+            "settingsAiMaskBackend",
+            &[(crate::state::AiProvider::Local, "Local Models (Offline)"), (crate::state::AiProvider::Cloud, "Cloud API (Instant · ~150ms)")],
+            &mut app.ui.settings.ai_provider,
+        );
+    });
+
+    if app.ui.settings.ai_provider == crate::state::AiProvider::Local {
+        heading(ui, t, "Local Models");
+        hint(
+            ui,
+            t,
+            "Local inference uses SAM 3 (~3.4 GB) and lightweight models (SINet, BiSeNet) on your machine. On CPU, foundation model passes take 20–30 seconds.",
+        );
+        let status = app.run("segment.model.status", json!({})).unwrap_or(Value::Null);
+        let installed = status["installed"].as_bool().unwrap_or(false);
+        let dir = status["dir"].as_str().unwrap_or("~/.config/lightcraft/models/sam3");
+
+        row(ui, t, "SAM 3 Status", |ui| {
+            if installed {
+                ui.label(RichText::new("✓ Installed (3.4 GB)").color(t.pick));
+            } else {
+                ui.label(RichText::new("Not installed").color(t.text_dim));
+            }
+        });
+        row(ui, t, "Model Folder", |ui| {
+            ui.label(RichText::new(dir).size(11.0).color(t.text_dim));
+        });
+        if !installed {
+            let dl = &status["download"];
+            let running = dl["running"].as_bool().unwrap_or(false);
+            if running {
+                let done = dl["done"].as_u64().unwrap_or(0);
+                let total = dl["total"].as_u64().unwrap_or(1);
+                let pct = (done as f32 / total as f32).clamp(0.0, 1.0);
+                ui.add(egui::ProgressBar::new(pct).text(format!("{:.0}%", pct * 100.0)));
+                if ui.button(crate::i18n::tr("Cancel Download")).clicked() {
+                    let _ = app.run("segment.model.cancel", json!({}));
+                }
+            } else if ui.button(crate::i18n::tr("Download SAM 3 Model (3.4 GB)…")).clicked() {
+                let _ = app.run("segment.model.download", json!({"acknowledged": true}));
+            }
+        }
+    } else {
+        heading(ui, t, "Cloud Acceleration");
+        hint(
+            ui,
+            t,
+            "Cloud API processes masks remotely in ~100–200ms without consuming local CPU/RAM or requiring heavy downloads. Ideal for non-developers and laptops without a dedicated GPU.",
+        );
+        row(ui, t, "Provider", |ui| {
+            choices(
+                ui,
+                "settingsCloudService",
+                &[
+                    (crate::state::CloudService::Fal, "fal.ai (Fastest · SAM 2 / BiRefNet)"),
+                    (crate::state::CloudService::Replicate, "Replicate"),
+                    (crate::state::CloudService::Custom, "Custom Endpoint"),
+                ],
+                &mut app.ui.settings.cloud_service,
+            );
+        });
+
+        row(ui, t, "API Key", |ui| {
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut app.ui.settings.cloud_api_key)
+                    .password(true)
+                    .hint_text(crate::i18n::tr("Paste your API key here"))
+                    .desired_width(260.0),
+            );
+            register(ui.ctx(), "field:cloudApiKey", r.rect);
+        });
+
+        if app.ui.settings.cloud_service == crate::state::CloudService::Custom {
+            row(ui, t, "Endpoint URL", |ui| {
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut app.ui.settings.cloud_endpoint)
+                        .hint_text("http://127.0.0.1:8080 or host:port")
+                        .desired_width(260.0),
+                );
+                register(ui.ctx(), "field:cloudEndpoint", r.rect);
+            });
+        }
+
+        row(ui, t, "Status", |ui| {
+            let has_key = !app.ui.settings.cloud_api_key.trim().is_empty();
+            if has_key {
+                ui.label(RichText::new("✓ Configured (Ready)").color(t.pick));
+            } else {
+                ui.label(RichText::new("No API Key entered").color(t.caution));
+            }
+        });
+
+        if app.ui.settings.cloud_api_key.trim().is_empty() {
+            match app.ui.settings.cloud_service {
+                crate::state::CloudService::Fal => {
+                    hint(ui, t, "Get an API key at fal.ai/dashboard/keys (supports sub-second SAM 2 and BiRefNet).");
+                }
+                crate::state::CloudService::Replicate => {
+                    hint(ui, t, "Get an API token at replicate.com/account/api-tokens.");
+                }
+                crate::state::CloudService::Custom => {
+                    hint(ui, t, "Specify a loopback or forwarded proxy address for custom model hosting.");
+                }
+            }
+        }
+    }
 }

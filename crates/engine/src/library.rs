@@ -124,6 +124,9 @@ impl Library {
     pub fn originals_dir(&self) -> PathBuf {
         self.dir.join("Originals")
     }
+    pub fn masks_dir(&self) -> PathBuf {
+        self.dir.join("masks")
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]

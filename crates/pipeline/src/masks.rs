@@ -70,7 +70,7 @@ impl Mattes {
         };
         match shape {
             MaskShape::Sky => self.of(&[Sky]),
-            MaskShape::Subject => person(),
+            MaskShape::Subject { .. } => person(),
             MaskShape::People { parts, .. } => {
                 let wanted: Vec<MatteKind> = parts
                     .iter()
@@ -243,6 +243,13 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
             }
             smooth_plane(&mut out, 0.01 * frame_px(frame, w));
         }
+        MaskShape::Subject { seg: Some(seg) } | MaskShape::People { seg: Some(seg), .. } => {
+            sample_seg(Some(seg), &[], 1.0, frame, w, h, &mut out);
+        }
+        MaskShape::Background { seg: Some(seg) } => {
+            sample_seg(Some(seg), &[], 1.0, frame, w, h, &mut out);
+            out.data.iter_mut().for_each(|v| *v = 1.0 - *v);
+        }
         MaskShape::Object { seg, detail, edge, .. } | MaskShape::Prompt { seg, detail, edge, .. } if seg.is_some() || !detail.is_empty() => {
             // Edge: below 0 a steeper transition (up to 8× the logits), above 0 feathered (up to
             // 2 % of the long edge, so previews and exports match)
@@ -256,7 +263,7 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
         // not computed yet (no clicks, or a build without the model): nothing selected
         MaskShape::Object { hint, .. } if hint.is_empty() => {}
         MaskShape::Prompt { .. } => {}
-        MaskShape::Subject | MaskShape::Object { .. } | MaskShape::People { .. } => {
+        MaskShape::Subject { .. } | MaskShape::Object { .. } | MaskShape::People { .. } => {
             // Saliency heuristic: centre-weighted local contrast (replaced by the segmenter in M12).
             let m = frame.out_to_norm(w, h);
             let blur = lightcraft_raster::blur::gaussian(log_l, 0.03 * frame_px(frame, w));
@@ -269,8 +276,8 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
             }
             smooth_plane(&mut out, 0.015 * frame_px(frame, w));
         }
-        MaskShape::Background => {
-            let mut s = shape_alpha(&MaskShape::Subject, frame, w, h, img, log_l, ev, mattes);
+        MaskShape::Background { .. } => {
+            let mut s = shape_alpha(&MaskShape::Subject { seg: None }, frame, w, h, img, log_l, ev, mattes);
             s.data.iter_mut().for_each(|v| *v = 1.0 - *v);
             out = s;
         }
@@ -329,7 +336,9 @@ fn sample_seg(seg: Option<&SegMask>, detail: &[SegMask], gain: f32, frame: &Fram
             let n = m.apply(Point::new(x as f64 + 0.5, y as f64 + 0.5));
             let fine = patches.iter().filter(|p| p.contains(n)).map(|p| p.logit(n)).reduce(f32::max);
             let l = fine.or_else(|| coarse.as_ref().map(|c| c.logit(n))).unwrap_or(-16.0);
-            *v = 1.0 / (1.0 + (-l * gain).exp());
+            let s = 1.0 / (1.0 + (-l * gain).exp());
+            let t = ((s - 0.10) / 0.80).clamp(0.0, 1.0);
+            *v = t * t * (3.0 - 2.0 * t);
         }
     });
 }
@@ -858,13 +867,13 @@ mod tests {
         mattes.push(MatteKind::Hair, right);
         let f = frame(w, h);
         let eval = |shape: &MaskShape| shape_alpha(shape, &f, w, h, &img, &l, 0.0, Some(&mattes));
-        let subject = eval(&MaskShape::Subject);
+        let subject = eval(&MaskShape::Subject { seg: None });
         assert!(subject.get(10, 50) > 0.99 && subject.get(190, 50) > 0.99 && subject.get(100, 50) < 0.01);
-        let background = eval(&MaskShape::Background);
+        let background = eval(&MaskShape::Background { seg: None });
         assert!(background.get(100, 50) > 0.99 && background.get(10, 50) < 0.01);
-        let hair = eval(&MaskShape::People { person: 0, parts: vec!["Hair".into()] });
+        let hair = eval(&MaskShape::People { person: 0, parts: vec!["Hair".into()], seg: None });
         assert!(hair.get(190, 50) > 0.99 && hair.get(10, 50) < 0.01);
-        let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()] };
+        let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()], seg: None };
         assert_eq!(eval(&lips), shape_alpha(&lips, &f, w, h, &img, &l, 0.0, None));
     }
 }

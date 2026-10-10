@@ -877,9 +877,16 @@ pub enum MaskShape {
         feather: f64,
     },
     /// AI / automatic selections, evaluated by a segmenter.
-    Subject,
+    Subject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seg: Option<crate::SegMask>,
+    },
     Sky,
-    Background,
+    Background {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seg: Option<crate::SegMask>,
+    },
+
     /// One object picked by clicks (SAM 3 point prompts): `hint` holds the clicks that include,
     /// `exclude` the ones that exclude; `seg` the segmentation computed from them.
     Object {
@@ -911,6 +918,8 @@ pub enum MaskShape {
     People {
         person: u32,
         parts: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seg: Option<crate::SegMask>,
     },
     Landscape {
         class: String,

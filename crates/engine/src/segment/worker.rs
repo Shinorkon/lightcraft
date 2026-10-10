@@ -42,6 +42,19 @@ pub enum Kind {
     /// Panics (tests of the worker's recovery).
     #[cfg(test)]
     Panic,
+    /// Subject segmentation using SINet.
+    Subject,
+    /// Edge refinement using MODNet.
+    Refine {
+        #[allow(dead_code)]
+        mask_id: u32,
+    },
+    /// People face parsing.
+    People {
+        #[allow(dead_code)]
+        person: u32,
+        parts: Vec<String>,
+    },
 }
 
 /// One request.
@@ -57,6 +70,7 @@ pub struct Job {
     pub kind: Kind,
     pub tag: Tag,
     pub reply: mpsc::Sender<Outcome>,
+    pub config: super::SegmentConfig,
 }
 
 /// A finished request: the segmentation (`None`: nothing selected / nothing to report).
@@ -249,7 +263,7 @@ fn model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path) -> Re
         let _busy = Flag::raise(&shared.encoding);
         let t = web_time::Instant::now();
         let m = Sam3::load(dir).map_err(|e| e.to_string())?;
-        log::info!("SAM 3 loaded in {:?}", t.elapsed());
+        log::info!("SAM 3 loaded on {:?} in {:?}", m.device(), t.elapsed());
         state.model = Some((dir.to_path_buf(), m));
         shared.loaded.store(true, Ordering::SeqCst);
     }
@@ -284,7 +298,9 @@ fn encoded<'a>(state: &'a mut State, shared: &Shared, job: &mut Job) -> Result<(
         let m = state.model.as_mut().map(|(_, m)| m).ok_or("the model did not load")?;
         let t = web_time::Instant::now();
         let mut enc = m.encode(&input.rgb, input.w, input.h).map_err(|e| e.to_string())?;
-        m.prepare_clicks(&mut enc).map_err(|e| e.to_string())?;
+        if matches!(job.kind, Kind::Clicks(_) | Kind::Prepare) {
+            m.prepare_clicks(&mut enc).map_err(|e| e.to_string())?;
+        }
         log::info!("SAM 3 encoded {}×{} in {:?}", input.w, input.h, t.elapsed());
         state.cache = Some((job.key, enc));
     }
@@ -327,6 +343,9 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
                 }
             }
         }
+        Kind::Subject => Operation::Text("person, clothing, hat, cap, headwear".into()),
+        Kind::People { parts, .. } => Operation::Text(if parts.is_empty() { "person, portrait, human".into() } else { parts.join(", ") }),
+        Kind::Refine { .. } => return Ok(None),
         #[cfg(test)]
         Kind::Panic => return Err("test panic request".into()),
     };
@@ -343,6 +362,18 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
 }
 
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<SegMask>, String> {
+    if job.config.provider == "cloud" {
+        if job.config.cloud_service == "custom" && !job.config.cloud_endpoint.trim().is_empty() {
+            let ep = job.config.cloud_endpoint.clone();
+            let result = remote_job(state, shared, job, &ep);
+            if result.is_err() {
+                state.remote = None;
+            }
+            return result.map_err(|e| format!("Custom remote inference failed: {e}. Check the endpoint and retry."));
+        }
+        let input = render(job)?;
+        return super::cloud::cloud_infer(job, &input);
+    }
     if let Some(endpoint) = remote::configured() {
         let result = remote_job(state, shared, job, &endpoint);
         if result.is_err() {
@@ -395,6 +426,54 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
             log::info!("SAM 3 detail pass ({}×{}) in {:?}", input.w, input.h, t.elapsed());
             Ok(logits.map(|l| SegMask::from_logits_in(side, &l, region)))
         }
+        Kind::Subject => {
+            let sinet_path = job.dir.join("sinet.onnx");
+            if sinet_path.is_file() {
+                let input = render(job)?;
+                let mut backend = lightcraft_segment::backend::default_backend();
+                backend.load_model(&sinet_path).map_err(|e| format!("Failed to load SINet model: {e}"))?;
+                let pixels = lightcraft_segment::mask::preprocess(&input.rgb, input.w, input.h, 224).map_err(|e| e.to_string())?;
+                let tensor = lightcraft_segment::backend::TensorData { shape: vec![1, 3, 224, 224], data: pixels };
+                let out = backend.infer(&tensor).map_err(|e| format!("SINet inference failed: {e}"))?;
+                Ok(Some(SegMask::from_logits(224, &out.data)))
+            } else {
+                let (m, enc) = encoded(state, shared, job)?;
+                let query = "person, clothing, hat, cap, headwear";
+                Ok(text_logits(m, enc, query)?.map(|l| SegMask::from_logits(side, &l)))
+            }
+        }
+        Kind::Refine { mask_id: _ } => {
+            let modnet_path = job.dir.join("modnet.onnx");
+            if modnet_path.is_file() {
+                let input = render(job)?;
+                let mut backend = lightcraft_segment::backend::default_backend();
+                backend.load_model(&modnet_path).map_err(|e| format!("Failed to load MODNet model: {e}"))?;
+                let pixels = lightcraft_segment::mask::preprocess(&input.rgb, input.w, input.h, 512).map_err(|e| e.to_string())?;
+                let tensor = lightcraft_segment::backend::TensorData { shape: vec![1, 3, 512, 512], data: pixels };
+                let out = backend.infer(&tensor).map_err(|e| format!("MODNet inference failed: {e}"))?;
+                Ok(Some(SegMask::from_logits(512, &out.data)))
+            } else {
+                Err("MODNet model not installed (expected modnet.onnx in model directory)".into())
+            }
+        }
+        Kind::People { person: _, parts } => {
+            let bisenet_path = job.dir.join("bisenet.onnx");
+            if bisenet_path.is_file() {
+                let input = render(job)?;
+                let mut backend = lightcraft_segment::backend::default_backend();
+                backend.load_model(&bisenet_path).map_err(|e| format!("Failed to load BiSeNet model: {e}"))?;
+                let pixels = lightcraft_segment::mask::preprocess(&input.rgb, input.w, input.h, 512).map_err(|e| e.to_string())?;
+                let tensor = lightcraft_segment::backend::TensorData { shape: vec![1, 3, 512, 512], data: pixels };
+                let out = backend.infer(&tensor).map_err(|e| format!("BiSeNet inference failed: {e}"))?;
+                let indices = lightcraft_segment::bisenet::resolve_parts(&parts);
+                let combined = lightcraft_segment::bisenet::combine_logits(&out.data, 512, &indices);
+                Ok(Some(SegMask::from_logits(512, &combined)))
+            } else {
+                let (m, enc) = encoded(state, shared, job)?;
+                let query = if parts.is_empty() { "person, people, portrait, human".to_string() } else { parts.join(", ") };
+                Ok(text_logits(m, enc, &query)?.map(|l| SegMask::from_logits(side, &l)))
+            }
+        }
     }
 }
 
@@ -405,7 +484,16 @@ mod tests {
     fn job(tag: Tag, reply: &mpsc::Sender<Outcome>) -> Job {
         // an empty folder: loading fails with an error (no model files)
         let dir = std::env::temp_dir().join(format!("lc-sam3-worker-none-{}", std::process::id()));
-        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone() }
+        Job {
+            dir,
+            key: 1,
+            render: None,
+            missing: None,
+            kind: Kind::Prepare,
+            tag,
+            reply: reply.clone(),
+            config: crate::segment::SegmentConfig::default(),
+        }
     }
 
     #[test]

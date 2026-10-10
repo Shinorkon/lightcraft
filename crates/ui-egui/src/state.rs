@@ -127,6 +127,25 @@ impl InfoOverlay {
     }
 }
 
+/// Execution backend for AI masks (Subject, People, Object, Describe).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiProvider {
+    #[default]
+    Local,
+    Cloud,
+}
+
+/// Cloud inference provider service.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CloudService {
+    #[default]
+    Fal,
+    Replicate,
+    Custom,
+}
+
 /// App-level preferences (Settings dialog). They belong to the app, not a library, and are
 /// saved with the UI state in the app's config folder (`ui.json`, key `settings`); library
 /// preferences (import defaults, XMP, cache size) live in the library's `prefs.json`.
@@ -159,6 +178,14 @@ pub struct AppSettings {
     /// The monitor's ICC profile previews are shown through (`app.displayProfile`; "" = none:
     /// the display is treated as sRGB).
     pub display_profile: String,
+    /// AI Masking backend: local models vs cloud acceleration.
+    pub ai_provider: AiProvider,
+    /// Cloud inference provider: fal.ai, Replicate, or custom endpoint.
+    pub cloud_service: CloudService,
+    /// API key for cloud segmentation.
+    pub cloud_api_key: String,
+    /// Custom endpoint for remote / proxy segmentation.
+    pub cloud_endpoint: String,
 }
 
 impl Default for AppSettings {
@@ -176,6 +203,10 @@ impl Default for AppSettings {
             grid_badges: GridBadges::Auto,
             keymap: Default::default(),
             display_profile: String::new(),
+            ai_provider: AiProvider::Local,
+            cloud_service: CloudService::Fal,
+            cloud_api_key: String::new(),
+            cloud_endpoint: String::new(),
         }
     }
 }

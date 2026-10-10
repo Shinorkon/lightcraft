@@ -839,6 +839,11 @@ impl Session {
         }
         if self.selection.ids.is_empty() { self.selection.active.into_iter().collect() } else { self.selection.ids.clone() }
     }
+
+    /// Where on-disk masks are cached for this library, if on disk.
+    pub fn masks_dir(&self) -> Option<std::path::PathBuf> {
+        self.library.as_ref().filter(|l| l.on_disk).map(|l| l.masks_dir())
+    }
 }
 
 /// Automatic versions kept per photo.
