@@ -145,6 +145,12 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                             app.ui.tool = kind.to_string();
                             let _ = app.run("mask.add", json!({"kind": kind}));
                         }
+                        "subject" | "background" | "people" => {
+                            if needs_model(app, kind, "new") {
+                                return;
+                            }
+                            let _ = app.run("mask.add", json!({"kind": kind}));
+                        }
                         k => {
                             let _ = app.run("mask.add", json!({"kind": k}));
                         }
@@ -708,6 +714,13 @@ pub(crate) fn begin_ai(app: &mut LightcraftApp, kind: &str, op: &str) -> Result<
             }?;
             app.ui.tool = "object".into();
             Ok(r)
+        }
+        "subject" | "background" | "people" => {
+            if op == "new" {
+                app.run("mask.add", json!({"kind": kind}))
+            } else {
+                app.run("mask.addComponent", json!({"op": op, "kind": kind}))
+            }
         }
         _ => {
             app.ui.describe = Some((op.to_string(), String::new()));
