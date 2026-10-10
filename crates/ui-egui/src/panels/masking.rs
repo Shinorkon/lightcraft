@@ -130,6 +130,9 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
                 ui.painter().galley(at, g, t.text_dim);
                 let resp = if elided { resp.on_hover_text(label) } else { resp };
                 if resp.clicked() {
+                    if *kind != "prompt" {
+                        app.ui.describe = None;
+                    }
                     match *kind {
                         "colorRange" => {
                             // an empty colour range; clicking the photo samples it
@@ -751,7 +754,17 @@ fn describe_field(app: &mut LightcraftApp, ui: &mut egui::Ui, new_mask: bool) {
         "intersect" => "Describe what to keep",
         _ => "Describe what to select",
     };
-    ui.label(crate::i18n::tr(prompt));
+    ui.horizontal(|ui| {
+        ui.label(crate::i18n::tr(prompt));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if text_button(ui, "maskDescribeClose", "✕", false).on_hover_text(crate::i18n::tr("Close")).clicked() {
+                app.ui.describe = None;
+            }
+        });
+    });
+    if app.ui.describe.is_none() {
+        return;
+    }
     let mut submit = false;
     // the (translated) Select button is placed first, at the right; the field takes what is left
     ui.allocate_ui_with_layout(vec2(ui.available_width(), 24.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
