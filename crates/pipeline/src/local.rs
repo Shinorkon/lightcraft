@@ -278,7 +278,16 @@ pub fn plane_sigmas(s: &DevelopSettings, px_per_long: f64, q: Quality) -> PlaneS
         || local_any(|a| a.sharpness)
         || local_any(|a| a.noise)
         || s.masks.iter().any(|m| m.adjust.defringe > 0.0))
-    .then(|| (0.0018 * ppl).max(0.6));
+    .then(|| {
+        let r = s.detail.sharpen_radius.clamp(0.5, 3.0) as f32;
+        let sharp_sigma = (r * 0.707).max(0.6);
+        if s.effects.texture != 0.0 || local_any(|a| a.texture) {
+            let tex_sigma = (0.0018 * ppl).max(0.6);
+            if s.detail.sharpen_amount > 0.0 || local_any(|a| a.sharpness) { sharp_sigma.min(tex_sigma) } else { tex_sigma }
+        } else {
+            sharp_sigma
+        }
+    });
     let dark = (s.effects.dehaze != 0.0 || local_any(|a| a.dehaze)).then(|| (0.02 * ppl).max(1.0));
     let chroma = (local_any(|a| a.moire) || s.masks.iter().any(|m| m.adjust.noise > 0.0)).then(|| (CHROMA_SIGMA * ppl).max(1.0));
     PlaneSigmas { base, clarity, texture, dark, chroma }
