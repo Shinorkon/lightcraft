@@ -243,6 +243,13 @@ pub fn shape_alpha(shape: &MaskShape, frame: &Frame, w: usize, h: usize, img: &R
             }
             smooth_plane(&mut out, 0.01 * frame_px(frame, w));
         }
+        MaskShape::Subject { seg: Some(seg) } | MaskShape::People { seg: Some(seg), .. } => {
+            sample_seg(Some(seg), &[], 1.0, frame, w, h, &mut out);
+        }
+        MaskShape::Background { seg: Some(seg) } => {
+            sample_seg(Some(seg), &[], 1.0, frame, w, h, &mut out);
+            out.data.iter_mut().for_each(|v| *v = 1.0 - *v);
+        }
         MaskShape::Object { seg, detail, edge, .. } | MaskShape::Prompt { seg, detail, edge, .. } if seg.is_some() || !detail.is_empty() => {
             // Edge: below 0 a steeper transition (up to 8× the logits), above 0 feathered (up to
             // 2 % of the long edge, so previews and exports match)
@@ -858,13 +865,13 @@ mod tests {
         mattes.push(MatteKind::Hair, right);
         let f = frame(w, h);
         let eval = |shape: &MaskShape| shape_alpha(shape, &f, w, h, &img, &l, 0.0, Some(&mattes));
-        let subject = eval(&MaskShape::Subject);
+        let subject = eval(&MaskShape::Subject { seg: None });
         assert!(subject.get(10, 50) > 0.99 && subject.get(190, 50) > 0.99 && subject.get(100, 50) < 0.01);
-        let background = eval(&MaskShape::Background);
+        let background = eval(&MaskShape::Background { seg: None });
         assert!(background.get(100, 50) > 0.99 && background.get(10, 50) < 0.01);
-        let hair = eval(&MaskShape::People { person: 0, parts: vec!["Hair".into()] });
+        let hair = eval(&MaskShape::People { person: 0, parts: vec!["Hair".into()], seg: None });
         assert!(hair.get(190, 50) > 0.99 && hair.get(10, 50) < 0.01);
-        let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()] };
+        let lips = MaskShape::People { person: 0, parts: vec!["Lips".into()], seg: None };
         assert_eq!(eval(&lips), shape_alpha(&lips, &f, w, h, &img, &l, 0.0, None));
     }
 }

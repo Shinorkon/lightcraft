@@ -46,10 +46,12 @@ pub enum Kind {
     Subject,
     /// Edge refinement using MODNet.
     Refine {
+        #[allow(dead_code)]
         mask_id: u32,
     },
     /// People face parsing.
     People {
+        #[allow(dead_code)]
         person: u32,
         parts: Vec<String>,
     },
@@ -338,7 +340,7 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
                 }
             }
         }
-        Kind::Subject | Kind::Refine { .. } | Kind::People { .. } => todo!("AI models logic"),
+        Kind::Subject | Kind::Refine { .. } | Kind::People { .. } => return Err("Remote inference does not support SINet/MODNet/BiSeNet".into()),
         #[cfg(test)]
         Kind::Panic => return Err("test panic request".into()),
     };
@@ -407,7 +409,42 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
             log::info!("SAM 3 detail pass ({}×{}) in {:?}", input.w, input.h, t.elapsed());
             Ok(logits.map(|l| SegMask::from_logits_in(side, &l, region)))
         }
-        Kind::Subject | Kind::Refine { .. } | Kind::People { .. } => todo!("AI models processing"),
+        Kind::Subject => {
+            let input = render(job)?;
+            let sinet_path = job.dir.join("sinet.onnx");
+            if sinet_path.is_file() {
+                use lightcraft_segment::backend::SegmentationBackend;
+                let mut backend = lightcraft_segment::backend::TractBackend::default();
+                backend.load_model(&sinet_path).map_err(|e| format!("Failed to load SINet model: {e}"))?;
+                let pixels = lightcraft_segment::mask::preprocess(&input.rgb, input.w, input.h, 224).map_err(|e| e.to_string())?;
+                let tensor = lightcraft_segment::backend::TensorData { shape: vec![1, 3, 224, 224], data: pixels };
+                let out = backend.infer(&tensor).map_err(|e| format!("SINet inference failed: {e}"))?;
+                Ok(Some(SegMask::from_logits(224, &out.data)))
+            } else {
+                let (m, enc) = encoded(state, shared, job)?;
+                Ok(text_logits(m, enc, "main subject")?.map(|l| SegMask::from_logits(side, &l)))
+            }
+        }
+        Kind::Refine { mask_id: _ } => {
+            let input = render(job)?;
+            let modnet_path = job.dir.join("modnet.onnx");
+            if modnet_path.is_file() {
+                use lightcraft_segment::backend::SegmentationBackend;
+                let mut backend = lightcraft_segment::backend::TractBackend::default();
+                backend.load_model(&modnet_path).map_err(|e| format!("Failed to load MODNet model: {e}"))?;
+                let pixels = lightcraft_segment::mask::preprocess(&input.rgb, input.w, input.h, 512).map_err(|e| e.to_string())?;
+                let tensor = lightcraft_segment::backend::TensorData { shape: vec![1, 3, 512, 512], data: pixels };
+                let out = backend.infer(&tensor).map_err(|e| format!("MODNet inference failed: {e}"))?;
+                Ok(Some(SegMask::from_logits(512, &out.data)))
+            } else {
+                Err("MODNet model not installed (expected modnet.onnx in model directory)".into())
+            }
+        }
+        Kind::People { person: _, parts } => {
+            let (m, enc) = encoded(state, shared, job)?;
+            let query = if parts.is_empty() { "person".to_string() } else { parts.join(" and ") };
+            Ok(text_logits(m, enc, &query)?.map(|l| SegMask::from_logits(side, &l)))
+        }
     }
 }
 

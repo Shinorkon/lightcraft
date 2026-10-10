@@ -68,6 +68,8 @@ pub(crate) enum Tag {
     Subject { photo: PhotoId, mask: Option<u32>, op: String, name: Option<String>, background: bool },
     /// People face parsing.
     People { photo: PhotoId, mask: Option<u32>, op: String, person: u32, parts: Vec<String> },
+    /// Edge refinement using MODNet.
+    Refine { photo: PhotoId, mask: u32 },
 }
 
 /// The model input: 8-bit RGB.
@@ -532,6 +534,95 @@ impl Session {
         }
     }
 
+    /// Segment the main subject on photo `id`, waiting for the model.
+    pub fn segment_subject(&mut self, id: PhotoId, _background: bool) -> Result<Option<SegMask>, String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            self.segment_wait(id, worker::Kind::Subject, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = id;
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Background mode: queue a Subject selection.
+    pub(crate) fn segment_subject_later(&mut self, id: PhotoId, mask: Option<u32>, op: String, name: Option<String>, background: bool) -> Result<(), String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            let tag = Tag::Subject { photo: id, mask, op, name, background };
+            self.segment_queue(id, worker::Kind::Subject, tag, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask, op, name, background);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Segment a person / body parts on photo `id`, waiting for the model.
+    pub fn segment_people(&mut self, id: PhotoId, person: u32, parts: &[String]) -> Result<Option<SegMask>, String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            self.segment_wait(id, worker::Kind::People { person, parts: parts.to_vec() }, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, person, parts);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Background mode: queue a People selection.
+    pub(crate) fn segment_people_later(&mut self, id: PhotoId, mask: Option<u32>, op: String, person: u32, parts: Vec<String>) -> Result<(), String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            let tag = Tag::People { photo: id, mask, op, person, parts: parts.clone() };
+            self.segment_queue(id, worker::Kind::People { person, parts }, tag, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask, op, person, parts);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Edge refinement for a mask using MODNet.
+    pub fn segment_refine(&mut self, id: PhotoId, mask: u32) -> Result<Option<SegMask>, String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            self.segment_wait(id, worker::Kind::Refine { mask_id: mask }, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+    /// Background mode: queue an Edge refinement for a mask.
+    pub(crate) fn segment_refine_later(&mut self, id: PhotoId, mask: u32) -> Result<(), String> {
+        self.segmenter.model_dir()?;
+        #[cfg(feature = "sam")]
+        {
+            let tag = Tag::Refine { photo: id, mask };
+            self.segment_queue(id, worker::Kind::Refine { mask_id: mask }, tag, None)
+        }
+        #[cfg(not(feature = "sam"))]
+        {
+            let _ = (id, mask);
+            Err("AI masks are not available in this build".into())
+        }
+    }
+
+
+
     /// Start a zoomed-in pass for component `comp` of mask `mask` on photo `id` (an Object or
     /// Describe selection): the photo around the selection is rendered at a higher resolution
     /// and segmented again. In background mode [`Session::segment_poll`] applies the result;
@@ -688,7 +779,92 @@ impl Session {
                     Err(e) => log::warn!("AI mask detail: {e}"),
                 }
             }
-            Tag::Subject { .. } | Tag::People { .. } => todo!("Session apply AI models"),
+            Tag::Subject { photo, mask, op, name, background } => {
+                let seg = match o.result {
+                    Ok(Some(seg)) => seg,
+                    Ok(None) => return polled.messages.push("No subject found in this photo.".into()),
+                    Err(e) => return polled.messages.push(e),
+                };
+                if self.active() != Some(photo) {
+                    return polled.messages.push("The photo changed before the subject was segmented.".into());
+                }
+                let Ok(seg_val) = serde_json::to_value(seg) else { return };
+                let kind = if background { "background" } else { "subject" };
+                let mut p = serde_json::json!({"kind": kind, "seg": seg_val});
+                if let Some(n) = name {
+                    p["name"] = serde_json::json!(n);
+                }
+                let r = match mask {
+                    None => self.execute("mask.add", &p),
+                    Some(m) => {
+                        if !self.develop_of(photo).is_some_and(|d| d.masks.iter().any(|x| x.id == m)) {
+                            return polled.messages.push("The mask was removed before the selection was found.".into());
+                        }
+                        self.active_mask = Some(m);
+                        p["op"] = serde_json::json!(op);
+                        self.execute("mask.addComponent", &p)
+                    }
+                };
+                match r {
+                    Ok(_) => {
+                        polled.changed = true;
+                        polled.refine = self.active_mask;
+                    }
+                    Err(e) => polled.messages.push(e.to_string()),
+                }
+            }
+            Tag::People { photo, mask, op, person, parts } => {
+                let seg = match o.result {
+                    Ok(Some(seg)) => seg,
+                    Ok(None) => return polled.messages.push("No person found in this photo.".into()),
+                    Err(e) => return polled.messages.push(e),
+                };
+                if self.active() != Some(photo) {
+                    return polled.messages.push("The photo changed before the person was segmented.".into());
+                }
+                let Ok(seg_val) = serde_json::to_value(seg) else { return };
+                let mut p = serde_json::json!({"kind": "people", "person": person, "parts": parts, "seg": seg_val});
+                let r = match mask {
+                    None => self.execute("mask.add", &p),
+                    Some(m) => {
+                        if !self.develop_of(photo).is_some_and(|d| d.masks.iter().any(|x| x.id == m)) {
+                            return polled.messages.push("The mask was removed before the selection was found.".into());
+                        }
+                        self.active_mask = Some(m);
+                        p["op"] = serde_json::json!(op);
+                        self.execute("mask.addComponent", &p)
+                    }
+                };
+                match r {
+                    Ok(_) => {
+                        polled.changed = true;
+                        polled.refine = self.active_mask;
+                    }
+                    Err(e) => polled.messages.push(e.to_string()),
+                }
+            }
+            Tag::Refine { photo, mask } => {
+                let seg = match o.result {
+                    Ok(Some(seg)) => seg,
+                    Ok(None) => return,
+                    Err(e) => return polled.messages.push(e),
+                };
+                let Some(d) = self.develop_of(photo) else { return };
+                let mut d = (*d).clone();
+                let Some(m) = d.masks.iter_mut().find(|m| m.id == mask) else { return };
+                if let Some(c) = m.components.first_mut() {
+                    match &mut c.shape {
+                        MaskShape::Subject { seg: s }
+                        | MaskShape::Background { seg: s }
+                        | MaskShape::People { seg: s, .. } => *s = Some(seg),
+                        _ => return,
+                    }
+                }
+                match self.set_develop(photo, d, "AI Mask Refine") {
+                    Ok(()) => polled.changed = true,
+                    Err(e) => polled.messages.push(e.to_string()),
+                }
+            }
         }
     }
 }

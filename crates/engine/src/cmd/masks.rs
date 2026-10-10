@@ -23,8 +23,13 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             invert: bool_or(p, "invert", false),
         },
         "sky" => MaskShape::Sky,
-        "subject" => MaskShape::Subject { seg: None },
-        "background" => MaskShape::Background { seg: None },
+        "subject" => MaskShape::Subject { seg: seg_param(p) },
+        "background" => MaskShape::Background { seg: seg_param(p) },
+        "people" => MaskShape::People {
+            person: p.get("person").and_then(Value::as_u64).unwrap_or(0) as u32,
+            parts: p.get("parts").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
+            seg: seg_param(p),
+        },
         "luminanceRange" => MaskShape::LuminanceRange {
             lo: f64_or(p, "lo", 0.6),
             hi: f64_or(p, "hi", 1.0),
@@ -46,7 +51,7 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
         other => {
             return Err(bad(
                 c,
-                format!("unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|luminanceRange|colorRange|object|prompt)"),
+                format!("unknown mask kind `{other}` (brush|linear|radial|sky|subject|background|people|luminanceRange|colorRange|object|prompt)"),
             ));
         }
     })
@@ -72,9 +77,13 @@ enum Later {
     Clicks(Vec<Point>, Vec<Point>),
     /// Background mode: the Describe selection is computed first; the mask is added when found.
     Text(String),
+    /// Background mode: Subject / Background selection is computed on the worker.
+    Subject(bool),
+    /// Background mode: People selection is computed on the worker.
+    People(u32, Vec<String>),
 }
 
-/// Compute the segmentation of a new AI shape (Object with clicks, Prompt) — or, in background
+/// Compute the segmentation of a new AI shape (Object with clicks, Prompt, Subject, People) — or, in background
 /// mode, say what to queue. An Object without clicks stays empty until the photo is clicked
 /// (the photo is analyzed meanwhile); a Prompt that matches nothing is an error. Shapes given
 /// with their `seg` need no model.
@@ -82,7 +91,32 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
     let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
     let background = s.segmenter.background;
     match shape {
-        MaskShape::Object { seg: Some(_), .. } | MaskShape::Prompt { seg: Some(_), .. } => {}
+        MaskShape::Object { seg: Some(_), .. }
+        | MaskShape::Prompt { seg: Some(_), .. }
+        | MaskShape::Subject { seg: Some(_) }
+        | MaskShape::Background { seg: Some(_) }
+        | MaskShape::People { seg: Some(_), .. } => {}
+        MaskShape::Subject { seg, .. } if background => {
+            s.segmenter.model_dir().map_err(ai_err)?;
+            return Ok(Later::Subject(false));
+        }
+        MaskShape::Subject { seg, .. } => {
+            *seg = s.segment_subject(id, false).map_err(ai_err)?;
+        }
+        MaskShape::Background { seg, .. } if background => {
+            s.segmenter.model_dir().map_err(ai_err)?;
+            return Ok(Later::Subject(true));
+        }
+        MaskShape::Background { seg, .. } => {
+            *seg = s.segment_subject(id, true).map_err(ai_err)?;
+        }
+        MaskShape::People { person, parts, seg, .. } if background => {
+            s.segmenter.model_dir().map_err(ai_err)?;
+            return Ok(Later::People(*person, parts.clone()));
+        }
+        MaskShape::People { person, parts, seg, .. } => {
+            *seg = s.segment_people(id, *person, parts).map_err(ai_err)?;
+        }
         MaskShape::Object { hint, exclude, .. } if !hint.is_empty() && background => {
             s.segmenter.model_dir().map_err(ai_err)?;
             return Ok(Later::Clicks(std::mem::take(hint), std::mem::take(exclude)));
@@ -116,10 +150,24 @@ fn resolve_ai(s: &mut Session, shape: &mut MaskShape, c: &str) -> Result<Later> 
 
 /// Queue what a new AI component (component `comp` of mask `mask`) still needs.
 fn queue_later(s: &mut Session, later: Later, mask: u32, comp: usize, mut out: Value) -> Result<Value> {
-    if let Later::Clicks(hint, exclude) = later {
-        let id = s.active().ok_or_else(|| ai_err("no active photo"))?;
-        s.segment_clicks_later(id, mask, comp, hint, exclude).map_err(ai_err)?;
-        out["pending"] = json!(true);
+    match later {
+        Later::Nothing => {}
+        Later::Clicks(hint, exclude) => {
+            let id = s.active().ok_or_else(|| ai_err("no active photo"))?;
+            s.segment_clicks_later(id, mask, comp, hint, exclude).map_err(ai_err)?;
+            out["pending"] = json!(true);
+        }
+        Later::Subject(bg) => {
+            let id = s.active().ok_or_else(|| ai_err("no active photo"))?;
+            s.segment_subject_later(id, Some(mask), "replace".into(), None, bg).map_err(ai_err)?;
+            out["pending"] = json!(true);
+        }
+        Later::People(person, parts) => {
+            let id = s.active().ok_or_else(|| ai_err("no active photo"))?;
+            s.segment_people_later(id, Some(mask), "replace".into(), person, parts).map_err(ai_err)?;
+            out["pending"] = json!(true);
+        }
+        Later::Text(_) => {}
     }
     Ok(out)
 }
@@ -170,6 +218,16 @@ pub fn specs() -> Vec<CommandSpec> {
                     s.segment_text_later(id, None, "add", name, text).map_err(ai_err)?;
                     return Ok(json!({"pending": true}));
                 }
+                if let Later::Subject(bg) = later {
+                    let id = s.active().ok_or_else(|| bad("mask.add", "no active photo"))?;
+                    s.segment_subject_later(id, None, "add".into(), name, bg).map_err(ai_err)?;
+                    return Ok(json!({"pending": true}));
+                }
+                if let Later::People(person, parts) = later {
+                    let id = s.active().ok_or_else(|| bad("mask.add", "no active photo"))?;
+                    s.segment_people_later(id, None, "add".into(), person, parts).map_err(ai_err)?;
+                    return Ok(json!({"pending": true}));
+                }
                 let next = s.active().and_then(|id| s.develop_of(id)).map(|d| d.next_mask_id()).unwrap_or(1);
                 let out = masks_edit(s, "mask.add", "Add Mask", |masks, active| {
                     masks.push(Mask {
@@ -206,6 +264,16 @@ pub fn specs() -> Vec<CommandSpec> {
                 if let Later::Text(text) = &later {
                     let op = p.get("op").and_then(Value::as_str).unwrap_or("add");
                     s.segment_text_later(id, Some(mid), op, None, text).map_err(ai_err)?;
+                    return Ok(json!({"pending": true}));
+                }
+                if let Later::Subject(bg) = later {
+                    let op_str = p.get("op").and_then(Value::as_str).unwrap_or("add");
+                    s.segment_subject_later(id, Some(mid), op_str.into(), None, bg).map_err(ai_err)?;
+                    return Ok(json!({"pending": true}));
+                }
+                if let Later::People(person, parts) = later {
+                    let op_str = p.get("op").and_then(Value::as_str).unwrap_or("add");
+                    s.segment_people_later(id, Some(mid), op_str.into(), person, parts).map_err(ai_err)?;
                     return Ok(json!({"pending": true}));
                 }
                 let mut comp = 0;
@@ -881,6 +949,40 @@ pub fn specs() -> Vec<CommandSpec> {
             s.set_develop(id, dd, "Delete Red Eye")?;
             ok()
         }),
+        cmd!(
+            "mask.ai.refine",
+            "Refine Mask Edges",
+            [],
+            None,
+            "{id?: maskId} — uses MODNet to compute soft alpha matting on the mask selection",
+            has_active,
+            |s, p| {
+                let mid = mask_id(p, s.active_mask, "mask.ai.refine")?;
+                let id = s.active().ok_or_else(|| bad("mask.ai.refine", "no active photo"))?;
+                if s.segmenter.background {
+                    s.segment_refine_later(id, mid).map_err(ai_err)?;
+                    Ok(json!({"pending": true}))
+                } else {
+                    let seg = s.segment_refine(id, mid).map_err(ai_err)?;
+                    if let Some(seg) = seg {
+                        masks_edit(s, "mask.ai.refine", "Refine Mask", |masks, _| {
+                            let i = find(masks, mid, "mask.ai.refine")?;
+                            if let Some(c) = masks[i].components.first_mut() {
+                                match &mut c.shape {
+                                    MaskShape::Subject { seg: s }
+                                    | MaskShape::Background { seg: s }
+                                    | MaskShape::People { seg: s, .. } => *s = Some(seg),
+                                    _ => {}
+                                }
+                            }
+                            Ok(())
+                        })
+                    } else {
+                        Ok(json!({"activeMask": mid}))
+                    }
+                }
+            }
+        ),
     ]
 }
 
