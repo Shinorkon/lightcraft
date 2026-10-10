@@ -751,7 +751,10 @@ impl Session {
                     }
                 };
                 match r {
-                    Ok(_) => {
+                    Ok(val) => {
+                        if let Some(am) = val.get("activeMask").and_then(serde_json::Value::as_u64) {
+                            self.active_mask = Some(am as u32);
+                        }
                         polled.changed = true;
                         polled.refine = self.active_mask;
                     }

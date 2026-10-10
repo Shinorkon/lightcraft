@@ -422,7 +422,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
                 Ok(Some(SegMask::from_logits(224, &out.data)))
             } else {
                 let (m, enc) = encoded(state, shared, job)?;
-                let query = "subject, person, foreground";
+                let query = "person, individual, human, subject";
                 Ok(text_logits(m, enc, query)?.map(|l| SegMask::from_logits(side, &l)))
             }
         }
