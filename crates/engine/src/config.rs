@@ -37,6 +37,19 @@ pub fn default_denoise_models_dir() -> Option<PathBuf> {
         .or_else(|| config_dir().map(|d| d.join("denoise-models")))
 }
 
+/// Where AI segmentation models (SAM 3) are kept: `$LIGHTCRAFT_SAM3_DIR` if set, else `<config>/models/sam3`.
+pub fn default_sam3_dir() -> Option<PathBuf> {
+    std::env::var_os("LIGHTCRAFT_SAM3_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| config_dir().map(|d| d.join("models").join("sam3")))
+}
+
+/// Where SAM 3 mirrors file is kept: `<config>/models/sam3-mirrors.txt`.
+pub fn default_sam3_mirrors_file() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("models").join("sam3-mirrors.txt"))
+}
+
 impl Session {
     /// Keep face models in the shared default folder ([`default_face_models_dir`]).
     pub fn with_default_face_models(mut self) -> Self {
@@ -47,6 +60,13 @@ impl Session {
     /// Keep denoise models in the shared default folder ([`default_denoise_models_dir`]).
     pub fn with_default_denoise_models(mut self) -> Self {
         self.set_denoise_models_dir(default_denoise_models_dir());
+        self
+    }
+
+    /// Keep AI segmentation models (SAM 3) in the shared default folder ([`default_sam3_dir`]).
+    pub fn with_default_segment_models(mut self) -> Self {
+        self.segmenter.dir = default_sam3_dir();
+        self.segmenter.mirrors_file = default_sam3_mirrors_file();
         self
     }
 

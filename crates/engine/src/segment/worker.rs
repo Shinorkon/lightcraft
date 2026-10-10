@@ -410,9 +410,9 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
             Ok(logits.map(|l| SegMask::from_logits_in(side, &l, region)))
         }
         Kind::Subject => {
-            let input = render(job)?;
             let sinet_path = job.dir.join("sinet.onnx");
             if sinet_path.is_file() {
+                let input = render(job)?;
                 use lightcraft_segment::backend::SegmentationBackend;
                 let mut backend = lightcraft_segment::backend::TractBackend::default();
                 backend.load_model(&sinet_path).map_err(|e| format!("Failed to load SINet model: {e}"))?;
@@ -427,9 +427,9 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
             }
         }
         Kind::Refine { mask_id: _ } => {
-            let input = render(job)?;
             let modnet_path = job.dir.join("modnet.onnx");
             if modnet_path.is_file() {
+                let input = render(job)?;
                 use lightcraft_segment::backend::SegmentationBackend;
                 let mut backend = lightcraft_segment::backend::TractBackend::default();
                 backend.load_model(&modnet_path).map_err(|e| format!("Failed to load MODNet model: {e}"))?;

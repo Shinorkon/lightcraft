@@ -295,12 +295,11 @@ pub fn merge(out: &Output, threshold: f32) -> Option<Prediction> {
     let s = |x: f32| 1.0 / (1.0 + (-x).exp());
     let presence = s(out.presence);
     let mut keep: Vec<(usize, f32)> = out.logits.iter().enumerate().map(|(i, l)| (i, s(*l) * presence)).filter(|(_, p)| *p > threshold).collect();
-    if keep.is_empty() {
-        if let Some((best_idx, best_score)) = out.logits.iter().enumerate().map(|(i, l)| (i, s(*l) * presence)).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)) {
-            if best_score > 0.05 {
-                keep.push((best_idx, best_score));
-            }
-        }
+    if keep.is_empty()
+        && let Some((best_idx, best_score)) = out.logits.iter().enumerate().map(|(i, l)| (i, s(*l) * presence)).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        && best_score > 0.05
+    {
+        keep.push((best_idx, best_score));
     }
     let best = keep.iter().map(|k| k.1).fold(0f32, f32::max);
     let mut merged: Option<Vec<f32>> = None;
