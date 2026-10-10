@@ -22,7 +22,7 @@ pub fn linear(i: usize, o: usize, vb: VarBuilder) -> Result<Linear> {
 
 /// Largest attention-score block computed at once (elements): the 5184-token global layers
 /// would otherwise need ~1.7 GB for all 16 heads.
-const SCORE_BLOCK: usize = 64 << 20;
+const SCORE_BLOCK: usize = 16 << 20;
 
 /// Scaled dot-product attention on `[B, H, L, d]` tensors, with an optional additive bias
 /// broadcastable to `[B, H, Lq, Lk]`. Heads are processed in groups to bound memory.
