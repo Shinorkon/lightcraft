@@ -43,7 +43,9 @@ impl Headless {
 
     /// A headless session with the procedurally generated demo library.
     pub fn demo() -> Self {
-        Self::new(Session::with_demo().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models().with_default_segment_models())
+        Self::new(
+            Session::with_demo().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models().with_default_segment_models(),
+        )
     }
 
     fn photo_or_active(&self, p: &Value) -> Result<PhotoId, String> {

@@ -754,12 +754,12 @@ fn describe_field(app: &mut LightcraftApp, ui: &mut egui::Ui, new_mask: bool) {
         "intersect" => "Describe what to keep",
         _ => "Describe what to select",
     };
-    ui.horizontal(|ui| {
-        ui.label(crate::i18n::tr(prompt));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if text_button(ui, "maskDescribeClose", "✕", false).on_hover_text(crate::i18n::tr("Close")).clicked() {
-                app.ui.describe = None;
-            }
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 20.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if text_button(ui, "maskDescribeClose", "✕", false).on_hover_text(crate::i18n::tr("Close")).clicked() {
+            app.ui.describe = None;
+        }
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.add(egui::Label::new(crate::i18n::tr(prompt)).truncate());
         });
     });
     if app.ui.describe.is_none() {

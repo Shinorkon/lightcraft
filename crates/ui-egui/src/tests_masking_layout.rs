@@ -17,7 +17,7 @@ fn text_shapes(shape: &egui::Shape, out: &mut Vec<egui::epaint::TextShape>) {
 
 fn panel(width: f32, scale: f32, locale: Locale, describe: bool) -> (Vec<egui::epaint::TextShape>, Vec<(String, Rect)>) {
     let mut app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Services::default());
-    app.run("mask.add", json!({"kind": "subject", "name": LONG_NAME})).unwrap();
+    app.run("mask.add", json!({"kind": "linear", "name": LONG_NAME})).unwrap();
     app.ui.describe = describe.then(|| ("new".into(), LONG_NAME.repeat(4)));
     app.ui.detail_due = Some((100.0, 1));
     let photo = app.session.active().unwrap();

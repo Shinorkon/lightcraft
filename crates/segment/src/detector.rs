@@ -296,7 +296,12 @@ pub fn merge(out: &Output, threshold: f32) -> Option<Prediction> {
     let presence = s(out.presence);
     let mut keep: Vec<(usize, f32)> = out.logits.iter().enumerate().map(|(i, l)| (i, s(*l) * presence)).filter(|(_, p)| *p > threshold).collect();
     if keep.is_empty()
-        && let Some((best_idx, best_score)) = out.logits.iter().enumerate().map(|(i, l)| (i, s(*l) * presence)).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        && let Some((best_idx, best_score)) = out
+            .logits
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (i, s(*l) * presence))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         && best_score > 0.05
     {
         keep.push((best_idx, best_score));

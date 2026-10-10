@@ -445,7 +445,16 @@ impl Session {
                 job
             }
         };
-        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply, config: self.segmenter.config.clone() })
+        Ok(worker::Job {
+            dir,
+            key: if region.is_some() { 0 } else { key },
+            render: Some(render),
+            missing,
+            kind,
+            tag,
+            reply,
+            config: self.segmenter.config.clone(),
+        })
     }
 
     /// Send a request and wait for its result (CLI, MCP, tests; or when not in background mode).
@@ -577,7 +586,14 @@ impl Session {
     }
 
     /// Background mode: queue a Subject selection.
-    pub(crate) fn segment_subject_later(&mut self, id: PhotoId, mask: Option<u32>, op: String, name: Option<String>, background: bool) -> Result<(), String> {
+    pub(crate) fn segment_subject_later(
+        &mut self,
+        id: PhotoId,
+        mask: Option<u32>,
+        op: String,
+        name: Option<String>,
+        background: bool,
+    ) -> Result<(), String> {
         self.segmenter.model_dir()?;
         #[cfg(feature = "sam")]
         {
@@ -648,8 +664,6 @@ impl Session {
             Err("AI masks are not available in this build".into())
         }
     }
-
-
 
     /// Start a zoomed-in pass for component `comp` of mask `mask` on photo `id` (an Object or
     /// Describe selection): the photo around the selection is rendered at a higher resolution
@@ -889,9 +903,7 @@ impl Session {
                 let Some(m) = d.masks.iter_mut().find(|m| m.id == mask) else { return };
                 if let Some(c) = m.components.first_mut() {
                     match &mut c.shape {
-                        MaskShape::Subject { seg: s }
-                        | MaskShape::Background { seg: s }
-                        | MaskShape::People { seg: s, .. } => *s = Some(seg),
+                        MaskShape::Subject { seg: s } | MaskShape::Background { seg: s } | MaskShape::People { seg: s, .. } => *s = Some(seg),
                         _ => return,
                     }
                 }

@@ -800,4 +800,3 @@ fn masking_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
         }
     }
 }
-

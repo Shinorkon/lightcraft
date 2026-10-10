@@ -310,6 +310,9 @@ impl LightcraftApp {
     pub fn new(mut session: Session, services: Services) -> Self {
         // AI mask requests run on the model's worker; frames apply their results (never wait)
         session.segmenter.background = true;
+        if session.segmenter.dir.is_none() {
+            session = session.with_default_segment_models();
+        }
         Self {
             session,
             ui: UiState::default(),

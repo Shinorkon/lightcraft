@@ -98,8 +98,12 @@ pub fn is_model_dir(dir: &Path) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// The best device here: Metal on macOS (when a GPU is available), else the CPU.
+/// The best device here: CUDA when available, Metal on macOS (when a GPU is available), else the CPU.
 pub fn best_device() -> Device {
+    #[cfg(feature = "cuda")]
+    if let Ok(d) = Device::new_cuda(0) {
+        return d;
+    }
     #[cfg(target_os = "macos")]
     if let Ok(d) = Device::new_metal(0) {
         return d;

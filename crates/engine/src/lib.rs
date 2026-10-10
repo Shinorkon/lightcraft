@@ -355,7 +355,7 @@ impl Session {
 
     /// A session with the procedurally generated demo library loaded.
     pub fn with_demo() -> Session {
-        let mut s = Session::new().with_default_segment_models();
+        let mut s = Session::new();
         demo::load(&mut s);
         s
     }

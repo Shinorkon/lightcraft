@@ -732,11 +732,14 @@ fn snapshot(args: &[String]) -> Result<(), String> {
     let t0 = Instant::now();
     let mut session = match &library {
         Some(dir) => {
-            let mut s = Session::new().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models().with_default_segment_models();
+            let mut s =
+                Session::new().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models().with_default_segment_models();
             s.open_library(dir, false).map_err(|e| library_error(dir, e))?;
             s
         }
-        None if files.is_empty() => Session::with_demo().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models().with_default_segment_models(),
+        None if files.is_empty() => {
+            Session::with_demo().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models().with_default_segment_models()
+        }
         None => Session::new().with_fs().with_default_denoise_models().with_system_clock().with_default_face_models().with_default_segment_models(),
     };
     // Apply compute policy before imports or the first scripted query can discover an adapter.

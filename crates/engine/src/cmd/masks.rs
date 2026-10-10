@@ -27,7 +27,11 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
         "background" => MaskShape::Background { seg: seg_param(p) },
         "people" => MaskShape::People {
             person: p.get("person").and_then(Value::as_u64).unwrap_or(0) as u32,
-            parts: p.get("parts").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default(),
+            parts: p
+                .get("parts")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
             seg: seg_param(p),
         },
         "luminanceRange" => MaskShape::LuminanceRange {
@@ -422,7 +426,10 @@ pub fn specs() -> Vec<CommandSpec> {
                         let _ = s.execute("mask.addComponent", &json!({"id": mid, "op": "add", "kind": "object"}))?;
                         let d = s.develop_of(id).unwrap_or_default();
                         let m = d.masks.iter().find(|m| m.id == mid).ok_or_else(|| bad(c, format!("no mask {mid}")))?;
-                        m.components.iter().rposition(|x| matches!(x.shape, MaskShape::Object { .. })).ok_or_else(|| bad(c, "failed to add Object component"))?
+                        m.components
+                            .iter()
+                            .rposition(|x| matches!(x.shape, MaskShape::Object { .. }))
+                            .ok_or_else(|| bad(c, "failed to add Object component"))?
                     }
                 };
                 let d = s.develop_of(id).unwrap_or_default();
@@ -1012,9 +1019,9 @@ pub fn specs() -> Vec<CommandSpec> {
                             let i = find(masks, mid, "mask.ai.refine")?;
                             if let Some(c) = masks[i].components.first_mut() {
                                 match &mut c.shape {
-                                    MaskShape::Subject { seg: s }
-                                    | MaskShape::Background { seg: s }
-                                    | MaskShape::People { seg: s, .. } => *s = Some(seg),
+                                    MaskShape::Subject { seg: s } | MaskShape::Background { seg: s } | MaskShape::People { seg: s, .. } => {
+                                        *s = Some(seg)
+                                    }
                                     _ => {}
                                 }
                             }

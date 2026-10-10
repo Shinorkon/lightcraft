@@ -428,8 +428,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
             let sinet_path = job.dir.join("sinet.onnx");
             if sinet_path.is_file() {
                 let input = render(job)?;
-                use lightcraft_segment::backend::SegmentationBackend;
-                let mut backend = lightcraft_segment::backend::TractBackend::default();
+                let mut backend = lightcraft_segment::backend::default_backend();
                 backend.load_model(&sinet_path).map_err(|e| format!("Failed to load SINet model: {e}"))?;
                 let pixels = lightcraft_segment::mask::preprocess(&input.rgb, input.w, input.h, 224).map_err(|e| e.to_string())?;
                 let tensor = lightcraft_segment::backend::TensorData { shape: vec![1, 3, 224, 224], data: pixels };
@@ -445,8 +444,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
             let modnet_path = job.dir.join("modnet.onnx");
             if modnet_path.is_file() {
                 let input = render(job)?;
-                use lightcraft_segment::backend::SegmentationBackend;
-                let mut backend = lightcraft_segment::backend::TractBackend::default();
+                let mut backend = lightcraft_segment::backend::default_backend();
                 backend.load_model(&modnet_path).map_err(|e| format!("Failed to load MODNet model: {e}"))?;
                 let pixels = lightcraft_segment::mask::preprocess(&input.rgb, input.w, input.h, 512).map_err(|e| e.to_string())?;
                 let tensor = lightcraft_segment::backend::TensorData { shape: vec![1, 3, 512, 512], data: pixels };
@@ -460,8 +458,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
             let bisenet_path = job.dir.join("bisenet.onnx");
             if bisenet_path.is_file() {
                 let input = render(job)?;
-                use lightcraft_segment::backend::SegmentationBackend;
-                let mut backend = lightcraft_segment::backend::TractBackend::default();
+                let mut backend = lightcraft_segment::backend::default_backend();
                 backend.load_model(&bisenet_path).map_err(|e| format!("Failed to load BiSeNet model: {e}"))?;
                 let pixels = lightcraft_segment::mask::preprocess(&input.rgb, input.w, input.h, 512).map_err(|e| e.to_string())?;
                 let tensor = lightcraft_segment::backend::TensorData { shape: vec![1, 3, 512, 512], data: pixels };
@@ -471,11 +468,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
                 Ok(Some(SegMask::from_logits(512, &combined)))
             } else {
                 let (m, enc) = encoded(state, shared, job)?;
-                let query = if parts.is_empty() {
-                    "person, people, portrait, human".to_string()
-                } else {
-                    parts.join(", ")
-                };
+                let query = if parts.is_empty() { "person, people, portrait, human".to_string() } else { parts.join(", ") };
                 Ok(text_logits(m, enc, &query)?.map(|l| SegMask::from_logits(side, &l)))
             }
         }
@@ -489,7 +482,16 @@ mod tests {
     fn job(tag: Tag, reply: &mpsc::Sender<Outcome>) -> Job {
         // an empty folder: loading fails with an error (no model files)
         let dir = std::env::temp_dir().join(format!("lc-sam3-worker-none-{}", std::process::id()));
-        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone(), config: super::SegmentConfig::default() }
+        Job {
+            dir,
+            key: 1,
+            render: None,
+            missing: None,
+            kind: Kind::Prepare,
+            tag,
+            reply: reply.clone(),
+            config: crate::segment::SegmentConfig::default(),
+        }
     }
 
     #[test]

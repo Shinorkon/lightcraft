@@ -31,28 +31,13 @@ pub const SAM3_FILES: &[FileSpec] = &[
 pub const SAM3_WEIGHTS_SIZE: u64 = 3_439_938_512;
 
 /// SINet ONNX model for pure-Rust salient subject segmentation (~430 KB).
-pub const SINET_FILES: &[FileSpec] = &[FileSpec {
-    name: crate::SINET_FILE,
-    size: None,
-    sha256: None,
-    max: 10 << 20,
-}];
+pub const SINET_FILES: &[FileSpec] = &[FileSpec { name: crate::SINET_FILE, size: None, sha256: None, max: 10 << 20 }];
 
 /// MODNet ONNX model for alpha matting edge refinement (~25 MB).
-pub const MODNET_FILES: &[FileSpec] = &[FileSpec {
-    name: crate::MODNET_FILE,
-    size: None,
-    sha256: None,
-    max: 50 << 20,
-}];
+pub const MODNET_FILES: &[FileSpec] = &[FileSpec { name: crate::MODNET_FILE, size: None, sha256: None, max: 50 << 20 }];
 
 /// BiSeNet ONNX model for facial and body-part parsing (~43 MB).
-pub const BISENET_FILES: &[FileSpec] = &[FileSpec {
-    name: crate::BISENET_FILE,
-    size: None,
-    sha256: None,
-    max: 100 << 20,
-}];
+pub const BISENET_FILES: &[FileSpec] = &[FileSpec { name: crate::BISENET_FILE, size: None, sha256: None, max: 100 << 20 }];
 
 /// Where LightCraft downloads the model from, in order: each is a base URL, and file `f` is at
 /// `<base>/<f>`. **Empty for now**: LightCraft has no download location of its own yet, so the
