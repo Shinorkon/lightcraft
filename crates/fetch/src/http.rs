@@ -508,6 +508,63 @@ pub fn get(url: &Url, headers: &[(&str, String)], limits: &Limits) -> Result<Res
     Ok(Response { status, headers, conn, body })
 }
 
+/// Send `POST url` with `headers` and `body` and read the status line and headers.
+pub fn post(url: &Url, headers: &[(&str, String)], body: &[u8], limits: &Limits) -> Result<Response, HttpError> {
+    let mut req = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: LightCraft/{}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        url.path,
+        url.host_header(),
+        env!("CARGO_PKG_VERSION"),
+        body.len()
+    );
+    for (k, v) in headers {
+        if v.chars().any(|c| c == '\r' || c == '\n') || k.chars().any(|c| c == '\r' || c == '\n' || c == ':') {
+            return Err(HttpError::BadUrl("header with a line break".into()));
+        }
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    let mut stream = Stream::connect(url, limits)?;
+    stream.write_all(req.as_bytes(), limits)?;
+    if !body.is_empty() {
+        stream.write_all(body, limits)?;
+    }
+    let mut conn = Conn { stream, buf: Vec::new(), pos: 0 };
+    let status_line = conn.line(MAX_HEAD, limits)?;
+    let mut parts = status_line.split_whitespace();
+    let version = parts.next().unwrap_or_default();
+    if !version.starts_with("HTTP/1.") {
+        return Err(HttpError::Protocol(format!("not an HTTP/1.x response: {}", status_line.chars().take(60).collect::<String>())));
+    }
+    let status = parts.next().and_then(|s| s.parse::<u16>().ok()).ok_or_else(|| HttpError::Protocol("bad status line".into()))?;
+    let mut headers = Vec::new();
+    let mut total = status_line.len();
+    loop {
+        let line = conn.line(MAX_HEAD, limits)?;
+        if line.is_empty() {
+            break;
+        }
+        total = total.saturating_add(line.len());
+        if total > MAX_HEAD || headers.len() > 200 {
+            return Err(HttpError::Protocol("response headers too large".into()));
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    }
+    let find = |name: &str| headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str());
+    let body = if status == 204 || status == 304 || (100..200).contains(&status) {
+        BodyMode::Done
+    } else if find("transfer-encoding").is_some_and(|v| v.to_ascii_lowercase().contains("chunked")) {
+        BodyMode::Chunked { left: 0, done: false }
+    } else if let Some(n) = find("content-length") {
+        BodyMode::Length(n.trim().parse::<u64>().map_err(|_| HttpError::Protocol(format!("bad Content-Length `{n}`")))?)
+    } else {
+        BodyMode::Close
+    };
+    Ok(Response { status, headers, conn, body })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

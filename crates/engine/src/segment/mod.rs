@@ -16,6 +16,8 @@
 //! MCP, tests) they wait for the worker.
 
 #[cfg(feature = "sam")]
+pub mod cloud;
+#[cfg(feature = "sam")]
 mod download;
 #[cfg(feature = "sam")]
 mod worker;
@@ -120,6 +122,26 @@ pub struct DownloadStatus {
     pub finished: bool,
 }
 
+/// Configuration for AI masking: local vs cloud inference.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SegmentConfig {
+    pub provider: String,
+    pub cloud_service: String,
+    pub cloud_key: String,
+    pub cloud_endpoint: String,
+}
+
+impl Default for SegmentConfig {
+    fn default() -> Self {
+        Self {
+            provider: "local".to_string(),
+            cloud_service: "fal".to_string(),
+            cloud_key: std::env::var("FAL_KEY").or_else(|_| std::env::var("LIGHTCRAFT_CLOUD_KEY")).unwrap_or_default(),
+            cloud_endpoint: std::env::var("LIGHTCRAFT_SAM3_REMOTE").unwrap_or_default(),
+        }
+    }
+}
+
 /// The model (on its worker thread), the download, and AI mask requests in flight.
 pub struct Segmenter {
     /// Where the `facebook/sam3` files live (set by the app; `None`: no AI masks).
@@ -129,6 +151,8 @@ pub struct Segmenter {
     /// Run requests in the background and apply them in [`Session::segment_poll`] (the
     /// desktop app); otherwise commands wait for their result (CLI, MCP, tests).
     pub background: bool,
+    /// AI masking configuration (local models vs cloud API).
+    pub config: SegmentConfig,
     pending: Option<PendingClicks>,
     messages: Vec<String>,
     #[cfg(feature = "sam")]
@@ -147,6 +171,7 @@ impl Default for Segmenter {
             dir: None,
             mirrors_file: None,
             background: false,
+            config: SegmentConfig::default(),
             pending: None,
             messages: Vec::new(),
             #[cfg(feature = "sam")]
@@ -244,8 +269,11 @@ impl Segmenter {
             return Err("AI masks are not available in this build".into());
         }
         #[cfg(feature = "sam")]
-        if lightcraft_segment::remote::configured().is_some() {
+        if lightcraft_segment::remote::configured().is_some() || (self.config.provider == "cloud" && !self.config.cloud_key.is_empty()) {
             return Ok(PathBuf::new());
+        }
+        if self.config.provider == "cloud" {
+            return Err("Cloud AI masking is enabled, but no API key is configured. Please enter your API key in Settings (⌘,) ▸ AI Masking, or choose Local Models.".into());
         }
         let dir = self.dir.clone().ok_or("no folder is set for the SAM 3 model")?;
         if self.installed() {
@@ -417,7 +445,7 @@ impl Session {
                 job
             }
         };
-        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply })
+        Ok(worker::Job { dir, key: if region.is_some() { 0 } else { key }, render: Some(render), missing, kind, tag, reply, config: self.segmenter.config.clone() })
     }
 
     /// Send a request and wait for its result (CLI, MCP, tests; or when not in background mode).

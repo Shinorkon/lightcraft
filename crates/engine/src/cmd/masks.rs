@@ -521,6 +521,37 @@ pub fn specs() -> Vec<CommandSpec> {
                     "licenseUrl": crate::segment::LICENSE_URL,
                     "mirrors": g.mirrors().len(),
                     "download": g.download_status(),
+                    "provider": g.config.provider,
+                    "service": g.config.cloud_service,
+                    "cloudConfigured": !g.config.cloud_key.is_empty(),
+                }))
+            }
+        ),
+        cmd!(
+            "segment.config",
+            "Configure AI Masking",
+            [],
+            None,
+            "{provider?: local|cloud, service?: fal|replicate|custom, key?: string, endpoint?: string} — configure AI masking inference backend",
+            super::always,
+            |s, p| {
+                if let Some(prov) = str_param(p, "provider") {
+                    s.segmenter.config.provider = prov.to_string();
+                }
+                if let Some(serv) = str_param(p, "service") {
+                    s.segmenter.config.cloud_service = serv.to_string();
+                }
+                if let Some(key) = str_param(p, "key") {
+                    s.segmenter.config.cloud_key = key.to_string();
+                }
+                if let Some(ep) = str_param(p, "endpoint") {
+                    s.segmenter.config.cloud_endpoint = ep.to_string();
+                }
+                Ok(json!({
+                    "provider": s.segmenter.config.provider,
+                    "service": s.segmenter.config.cloud_service,
+                    "endpoint": s.segmenter.config.cloud_endpoint,
+                    "configured": !s.segmenter.config.cloud_key.is_empty(),
                 }))
             }
         ),

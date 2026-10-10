@@ -299,6 +299,8 @@ pub struct LightcraftApp {
     pub(crate) display_applied: Option<String>,
     /// Why the display profile setting could not be applied (shown in Settings ▸ Display).
     pub display_error: Option<String>,
+    /// The AI masking settings last applied (provider, service, key, endpoint).
+    ai_config_applied: Option<(state::AiProvider, state::CloudService, String, String)>,
     /// The library failed to open at launch: the blocking window, then the temporary-session
     /// banner (issue #100). Cleared once a library opens.
     pub library_problem: Option<panels::library_problem::LibraryProblem>,
@@ -366,6 +368,7 @@ impl LightcraftApp {
             memory_applied: None,
             display_applied: None,
             display_error: None,
+            ai_config_applied: None,
             library_problem: None,
             model_setup: Default::default(),
         }
@@ -916,6 +919,32 @@ impl LightcraftApp {
                 }
             }
             self.display_applied = Some(path);
+        }
+        let ai_cur = (
+            self.ui.settings.ai_provider,
+            self.ui.settings.cloud_service,
+            self.ui.settings.cloud_api_key.clone(),
+            self.ui.settings.cloud_endpoint.clone(),
+        );
+        if self.ai_config_applied.as_ref() != Some(&ai_cur) {
+            let (provider, service, key, endpoint) = ai_cur.clone();
+            self.ai_config_applied = Some(ai_cur);
+            let _ = self.session.execute(
+                "segment.config",
+                &serde_json::json!({
+                    "provider": match provider {
+                        state::AiProvider::Local => "local",
+                        state::AiProvider::Cloud => "cloud",
+                    },
+                    "service": match service {
+                        state::CloudService::Fal => "fal",
+                        state::CloudService::Replicate => "replicate",
+                        state::CloudService::Custom => "custom",
+                    },
+                    "key": key,
+                    "endpoint": endpoint,
+                }),
+            );
         }
         if let Some(fs) = ctx.input(|i| i.viewport().fullscreen) {
             self.window_is_fullscreen = fs;

@@ -70,6 +70,7 @@ pub struct Job {
     pub kind: Kind,
     pub tag: Tag,
     pub reply: mpsc::Sender<Outcome>,
+    pub config: super::SegmentConfig,
 }
 
 /// A finished request: the segmentation (`None`: nothing selected / nothing to report).
@@ -340,7 +341,9 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
                 }
             }
         }
-        Kind::Subject | Kind::Refine { .. } | Kind::People { .. } => return Err("Remote inference does not support SINet/MODNet/BiSeNet".into()),
+        Kind::Subject => Operation::Text("person, individual, human, subject".into()),
+        Kind::People { parts, .. } => Operation::Text(if parts.is_empty() { "person, portrait, human".into() } else { parts.join(", ") }),
+        Kind::Refine { .. } => return Ok(None),
         #[cfg(test)]
         Kind::Panic => return Err("test panic request".into()),
     };
@@ -357,6 +360,18 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
 }
 
 fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<SegMask>, String> {
+    if job.config.provider == "cloud" {
+        if job.config.cloud_service == "custom" && !job.config.cloud_endpoint.trim().is_empty() {
+            let ep = job.config.cloud_endpoint.clone();
+            let result = remote_job(state, shared, job, &ep);
+            if result.is_err() {
+                state.remote = None;
+            }
+            return result.map_err(|e| format!("Custom remote inference failed: {e}. Check the endpoint and retry."));
+        }
+        let input = render(job)?;
+        return super::cloud::cloud_infer(job, &input);
+    }
     if let Some(endpoint) = remote::configured() {
         let result = remote_job(state, shared, job, &endpoint);
         if result.is_err() {
@@ -422,7 +437,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
                 Ok(Some(SegMask::from_logits(224, &out.data)))
             } else {
                 let (m, enc) = encoded(state, shared, job)?;
-                let query = "person, individual, human, subject";
+                let query = "person, individual, human, subject, clothing, accessories, item held";
                 Ok(text_logits(m, enc, query)?.map(|l| SegMask::from_logits(side, &l)))
             }
         }
@@ -474,7 +489,7 @@ mod tests {
     fn job(tag: Tag, reply: &mpsc::Sender<Outcome>) -> Job {
         // an empty folder: loading fails with an error (no model files)
         let dir = std::env::temp_dir().join(format!("lc-sam3-worker-none-{}", std::process::id()));
-        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone() }
+        Job { dir, key: 1, render: None, missing: None, kind: Kind::Prepare, tag, reply: reply.clone(), config: super::SegmentConfig::default() }
     }
 
     #[test]
