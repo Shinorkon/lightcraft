@@ -808,7 +808,6 @@ impl Session {
                 match r {
                     Ok(_) => {
                         polled.changed = true;
-                        polled.refine = self.active_mask;
                     }
                     Err(e) => polled.messages.push(e.to_string()),
                 }
@@ -838,7 +837,6 @@ impl Session {
                 match r {
                     Ok(_) => {
                         polled.changed = true;
-                        polled.refine = self.active_mask;
                     }
                     Err(e) => polled.messages.push(e.to_string()),
                 }

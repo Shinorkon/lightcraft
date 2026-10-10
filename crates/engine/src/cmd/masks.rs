@@ -407,14 +407,26 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
                 let exclude = bool_or(p, "exclude", false);
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
-                let mid = mask_id(p, s.active_mask, c)?;
+                let mid = match mask_id(p, s.active_mask, c) {
+                    Ok(mid) => mid,
+                    Err(_) => {
+                        let _ = s.execute("mask.add", &json!({"kind": "object"}))?;
+                        s.active_mask.ok_or_else(|| bad(c, "no mask selected"))?
+                    }
+                };
                 let d = s.develop_of(id).unwrap_or_default();
                 let m = d.masks.iter().find(|m| m.id == mid).ok_or_else(|| bad(c, format!("no mask {mid}")))?;
-                let k = m
-                    .components
-                    .iter()
-                    .rposition(|x| matches!(x.shape, MaskShape::Object { .. }))
-                    .ok_or_else(|| bad(c, "the mask has no Object selection (add one first)"))?;
+                let k = match m.components.iter().rposition(|x| matches!(x.shape, MaskShape::Object { .. })) {
+                    Some(k) => k,
+                    None => {
+                        let _ = s.execute("mask.addComponent", &json!({"id": mid, "op": "add", "kind": "object"}))?;
+                        let d = s.develop_of(id).unwrap_or_default();
+                        let m = d.masks.iter().find(|m| m.id == mid).ok_or_else(|| bad(c, format!("no mask {mid}")))?;
+                        m.components.iter().rposition(|x| matches!(x.shape, MaskShape::Object { .. })).ok_or_else(|| bad(c, "failed to add Object component"))?
+                    }
+                };
+                let d = s.develop_of(id).unwrap_or_default();
+                let m = d.masks.iter().find(|m| m.id == mid).ok_or_else(|| bad(c, format!("no mask {mid}")))?;
                 let Some(MaskShape::Object { hint, exclude: ex, edge, .. }) = m.components.get(k).map(|x| &x.shape) else {
                     return Err(bad(c, "not an Object component"));
                 };
