@@ -400,6 +400,9 @@ impl LightcraftApp {
             // Keep it hidden after release; O / the overlay eye can show it again.
             self.ui.mask_overlay = false;
         }
+        if r.is_ok() && (id == "mask.add" || id == "mask.select") {
+            self.ui.mask_overlay = true;
+        }
         if r.is_ok() && id == "photo.label" {
             let label = params.get("label").and_then(Value::as_str).and_then(lightcraft_catalog::ColorLabel::parse);
             let text = match label {
@@ -534,6 +537,7 @@ impl LightcraftApp {
         let polled = self.session.segment_poll();
         let now = ctx.input(|i| i.time);
         if polled.changed {
+            self.ui.mask_overlay = true;
             ctx.request_repaint();
         }
         if let Some(mask) = polled.refine {
