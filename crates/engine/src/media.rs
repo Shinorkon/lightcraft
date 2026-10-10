@@ -1289,10 +1289,14 @@ impl crate::Session {
         depth: lightcraft_pipeline::OutputDepth,
     ) -> Result<RenderJob, String> {
         let mut job = self.render_job(id, max_w, max_h, false, true).ok_or("no such photo")?;
+        let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
+        if job.level != SourceLevel::Full {
+            job.level = SourceLevel::Full;
+            job.source = self.media.source_ref(&p, SourceLevel::Full);
+        }
         // An export is made from the denoised picture its Denoise amount asks for, made when the job runs if the
         // background queue has not got to it. (A source kept in memory may lack the picture, so the job reads the file.)
         if let Some(wanted) = self.denoise_for_export(id, &job.settings)? {
-            let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
             job.source = self.media.source_ref_uncached(&p, job.level);
             if let SourceRef::File { denoise, .. } = &mut job.source {
                 *denoise = Some(wanted);

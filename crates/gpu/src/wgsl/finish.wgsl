@@ -389,7 +389,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if (sm > 0.0) {
                 mk = sstep(sm * 0.25, sm * 0.25 + 0.15, abs(det));
             }
-            delta += sp * 1.3 * clamp(det, -0.8, 0.8) * mk;
+            delta += sp * 3.5 * clamp(det, -0.8, 0.8) * mk;
         }
     }
     // local Noise: smooth (or, negative, boost) small-amplitude detail, keep edges
