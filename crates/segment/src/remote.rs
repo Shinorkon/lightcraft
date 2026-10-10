@@ -169,8 +169,13 @@ fn serve_client(stream: &mut TcpStream, dir: &Path, device: candle_core::Device)
             let enc = if request.temporary { temporary.as_mut() } else { cache.as_mut() }.ok_or("SAM image cache empty")?;
             predict(m, enc, request.operation)
         })();
+        let dev_name = match &device {
+            candle_core::Device::Cuda(_) => "CUDA",
+            candle_core::Device::Metal(_) => "Metal",
+            candle_core::Device::Cpu => "CPU",
+        };
         eprintln!(
-            "SAM3 Metal request elapsed={:.3}s image={}x{} detail={} success={}",
+            "SAM3 {dev_name} request elapsed={:.3}s image={}x{} detail={} success={}",
             started.elapsed().as_secs_f64(),
             request.width,
             request.height,
@@ -186,14 +191,19 @@ fn serve_client(stream: &mut TcpStream, dir: &Path, device: candle_core::Device)
 }
 
 pub fn serve(address: SocketAddr, dir: &Path, device: candle_core::Device) -> Result<(), String> {
-    if !address.ip().is_loopback() || !device.is_metal() {
-        return Err("SAM worker requires a loopback address and a Metal device".into());
+    if !address.ip().is_loopback() {
+        return Err("SAM worker requires a loopback address".into());
     }
     if !crate::is_model_dir(dir) {
         return Err("SAM model files are missing".into());
     }
+    let dev_name = match &device {
+        candle_core::Device::Cuda(_) => "CUDA",
+        candle_core::Device::Metal(_) => "Metal",
+        candle_core::Device::Cpu => "CPU",
+    };
     let listener = TcpListener::bind(address).map_err(|e| e.to_string())?;
-    eprintln!("SAM3 worker listening on {address}; device=Metal; idle unload=600s");
+    eprintln!("SAM3 worker listening on {address}; device={dev_name}; idle unload=600s");
     for stream in listener.incoming() {
         let mut stream = stream.map_err(|e| e.to_string())?;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve_client(&mut stream, dir, device.clone())));
