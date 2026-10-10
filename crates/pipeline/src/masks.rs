@@ -336,7 +336,9 @@ fn sample_seg(seg: Option<&SegMask>, detail: &[SegMask], gain: f32, frame: &Fram
             let n = m.apply(Point::new(x as f64 + 0.5, y as f64 + 0.5));
             let fine = patches.iter().filter(|p| p.contains(n)).map(|p| p.logit(n)).reduce(f32::max);
             let l = fine.or_else(|| coarse.as_ref().map(|c| c.logit(n))).unwrap_or(-16.0);
-            *v = 1.0 / (1.0 + (-l * gain).exp());
+            let s = 1.0 / (1.0 + (-l * gain).exp());
+            let t = ((s - 0.10) / 0.80).clamp(0.0, 1.0);
+            *v = t * t * (3.0 - 2.0 * t);
         }
     });
 }

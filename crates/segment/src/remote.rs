@@ -111,7 +111,9 @@ impl Client {
 pub fn text_logits(model: &mut Sam3, enc: &mut Encoded, text: &str) -> Result<Option<Vec<f32>>, String> {
     let mut merged: Option<Vec<f32>> = None;
     for phrase in text.split([',', ';']).map(str::trim).filter(|p| !p.is_empty()) {
-        if let Some(p) = model.segment_text(enc, phrase, 0.5).map_err(|e| e.to_string())? {
+        if let Some(p) = model.segment_text(enc, phrase, 0.5).map_err(|e| e.to_string())?
+            && p.score >= 0.25
+        {
             if let Some(m) = &mut merged {
                 for (a, b) in m.iter_mut().zip(p.logits) {
                     *a = a.max(b);

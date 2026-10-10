@@ -26,7 +26,7 @@ const EPS: f64 = 1e-6;
 
 /// Cosine and sine tables `[N, head_dim]` for a `side × side` grid whose coordinates are scaled
 /// by `scale` (`Sam3ViTRotaryEmbedding`: x frequencies then y, each duplicated pairwise).
-fn rope_tables(side: usize, scale: f64, device: &Device) -> Result<(Tensor, Tensor)> {
+fn rope_tables(side: usize, scale: f64, dtype: candle_core::DType, device: &Device) -> Result<(Tensor, Tensor)> {
     let spatial = HEAD_DIM / 2;
     let inv: Vec<f64> = (0..spatial).step_by(2).map(|i| 1.0 / 10000f64.powf(i as f64 / spatial as f64)).collect();
     let n = side * side;
@@ -44,7 +44,9 @@ fn rope_tables(side: usize, scale: f64, device: &Device) -> Result<(Tensor, Tens
             }
         }
     }
-    Ok((Tensor::from_vec(cos, (n, HEAD_DIM), device)?, Tensor::from_vec(sin, (n, HEAD_DIM), device)?))
+    let cos = Tensor::from_vec(cos, (n, HEAD_DIM), device)?.to_dtype(dtype)?;
+    let sin = Tensor::from_vec(sin, (n, HEAD_DIM), device)?.to_dtype(dtype)?;
+    Ok((cos, sin))
 }
 
 /// `x·cos + rotate_pairwise(x)·sin`, where rotate_pairwise maps (a, b) pairs to (−b, a).
@@ -145,13 +147,14 @@ impl Vit {
                 window: if GLOBAL.contains(&i) { 0 } else { WINDOW },
             });
         }
+        let dtype = vb.dtype();
         Ok(Self {
             patch,
             pos,
             ln_pre: ln(HIDDEN, EPS, vb.pp("layer_norm"))?,
             layers,
-            rope_window: rope_tables(WINDOW, 1.0, &device)?,
-            rope_global: rope_tables(GRID, WINDOW as f64 / GRID as f64, &device)?,
+            rope_window: rope_tables(WINDOW, 1.0, dtype, &device)?,
+            rope_global: rope_tables(GRID, WINDOW as f64 / GRID as f64, dtype, &device)?,
         })
     }
 

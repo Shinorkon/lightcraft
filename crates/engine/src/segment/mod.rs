@@ -15,6 +15,7 @@
 //! commands return at once and [`Session::segment_poll`] applies the results; without it (CLI,
 //! MCP, tests) they wait for the worker.
 
+pub mod cache;
 #[cfg(feature = "sam")]
 pub mod cloud;
 #[cfg(feature = "sam")]
@@ -72,6 +73,8 @@ pub(crate) enum Tag {
     People { photo: PhotoId, mask: Option<u32>, op: String, person: u32, parts: Vec<String> },
     /// Edge refinement using MODNet.
     Refine { photo: PhotoId, mask: u32 },
+    /// Background precomputation for subject mask.
+    Precompute { photo: PhotoId },
 }
 
 /// The model input: 8-bit RGB.
@@ -153,6 +156,10 @@ pub struct Segmenter {
     pub background: bool,
     /// AI masking configuration (local models vs cloud API).
     pub config: SegmentConfig,
+    /// In-memory and on-disk precomputed mask cache.
+    pub cache: cache::MaskCache,
+    /// Photos waiting for background mask precomputation.
+    pub precompute_queue: Vec<PhotoId>,
     pending: Option<PendingClicks>,
     messages: Vec<String>,
     #[cfg(feature = "sam")]
@@ -172,6 +179,8 @@ impl Default for Segmenter {
             mirrors_file: None,
             background: false,
             config: SegmentConfig::default(),
+            cache: cache::MaskCache::default(),
+            precompute_queue: Vec::new(),
             pending: None,
             messages: Vec::new(),
             #[cfg(feature = "sam")]
@@ -585,7 +594,84 @@ impl Session {
         }
     }
 
-    /// Background mode: queue a Subject selection.
+    /// Retrieve a precomputed mask from cache (memory or disk), if present.
+    pub fn segment_cached(&self, id: PhotoId, kind: &str) -> Option<SegMask> {
+        let dir = self.masks_dir();
+        self.segmenter.cache.get(dir.as_deref(), id, kind)
+    }
+
+    /// Store a mask in the library's on-disk and in-memory cache.
+    pub fn segment_store_cache(&self, id: PhotoId, kind: &str, seg: &SegMask) {
+        let dir = self.masks_dir();
+        self.segmenter.cache.store(dir.as_deref(), id, kind, seg);
+    }
+
+    /// Queue photos for background AI mask precomputation (e.g. upon import).
+    pub fn segment_enqueue_precompute(&mut self, ids: &[PhotoId]) {
+        self.segmenter.precompute_queue.extend(ids.iter().copied());
+    }
+
+    /// Process the next item in the precompute queue when the worker is idle.
+    pub fn segment_pump_precompute(&mut self) {
+        #[cfg(feature = "sam")]
+        {
+            if self.segmenter.dir.is_none() || !self.segmenter.background || self.segmenter.busy() {
+                return;
+            }
+            while let Some(photo) = self.segmenter.precompute_queue.pop() {
+                if self.catalog.photo(photo).is_none() {
+                    continue;
+                }
+                if self.segment_cached(photo, "subject").is_some() {
+                    continue;
+                }
+                let tag = Tag::Precompute { photo };
+                let _ = self.segment_queue(photo, worker::Kind::Subject, tag, None);
+                break;
+            }
+        }
+    }
+
+    /// Apply a subject or background segmentation directly to develop settings.
+    pub(crate) fn apply_subject_seg(
+        &mut self,
+        photo: PhotoId,
+        mask: Option<u32>,
+        op: String,
+        name: Option<String>,
+        background: bool,
+        seg: SegMask,
+    ) -> Result<Option<u32>, String> {
+        let Ok(seg_val) = serde_json::to_value(seg) else { return Err("failed to serialize segmentation".into()) };
+        let kind = if background { "background" } else { "subject" };
+        let mut p = serde_json::json!({"kind": kind, "seg": seg_val});
+        if let Some(n) = name {
+            p["name"] = serde_json::json!(n);
+        }
+        let r = match mask {
+            None => self.execute("mask.add", &p),
+            Some(m) => {
+                if !self.develop_of(photo).is_some_and(|d| d.masks.iter().any(|x| x.id == m)) {
+                    return Err("The mask was removed before the selection was found.".into());
+                }
+                self.active_mask = Some(m);
+                p["op"] = serde_json::json!(op);
+                self.execute("mask.addComponent", &p)
+            }
+        };
+        match r {
+            Ok(val) => {
+                let active = val.get("activeMask").and_then(serde_json::Value::as_u64).map(|am| am as u32);
+                if let Some(am) = active {
+                    self.active_mask = Some(am);
+                }
+                Ok(active)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Background mode: queue a Subject selection (instantly returns if cached).
     pub(crate) fn segment_subject_later(
         &mut self,
         id: PhotoId,
@@ -594,6 +680,12 @@ impl Session {
         name: Option<String>,
         background: bool,
     ) -> Result<(), String> {
+        let kind = if background { "background" } else { "subject" };
+        if let Some(seg) = self.segment_cached(id, kind) {
+            let _ = self.apply_subject_seg(id, mask, op, name, background, seg)?;
+            return Ok(());
+        }
+
         self.segmenter.model_dir()?;
         #[cfg(feature = "sam")]
         {
@@ -726,6 +818,7 @@ impl Session {
             // clicks whose request was lost (the worker restarted) aren't pending forever
             if idle {
                 self.segmenter.pending = None;
+                self.segment_pump_precompute();
             }
         }
         polled
@@ -830,34 +923,22 @@ impl Session {
                     Ok(None) => return polled.messages.push("No subject found in this photo.".into()),
                     Err(e) => return polled.messages.push(e),
                 };
+                let kind = if background { "background" } else { "subject" };
+                self.segment_store_cache(photo, kind, &seg);
                 if self.active() != Some(photo) {
                     return polled.messages.push("The photo changed before the subject was segmented.".into());
                 }
-                let Ok(seg_val) = serde_json::to_value(seg) else { return };
-                let kind = if background { "background" } else { "subject" };
-                let mut p = serde_json::json!({"kind": kind, "seg": seg_val});
-                if let Some(n) = name {
-                    p["name"] = serde_json::json!(n);
-                }
-                let r = match mask {
-                    None => self.execute("mask.add", &p),
-                    Some(m) => {
-                        if !self.develop_of(photo).is_some_and(|d| d.masks.iter().any(|x| x.id == m)) {
-                            return polled.messages.push("The mask was removed before the selection was found.".into());
-                        }
-                        self.active_mask = Some(m);
-                        p["op"] = serde_json::json!(op);
-                        self.execute("mask.addComponent", &p)
-                    }
-                };
-                match r {
-                    Ok(val) => {
-                        if let Some(am) = val.get("activeMask").and_then(serde_json::Value::as_u64) {
-                            self.active_mask = Some(am as u32);
-                        }
+                match self.apply_subject_seg(photo, mask, op, name, background, seg) {
+                    Ok(am) => {
                         polled.changed = true;
+                        polled.refine = am;
                     }
-                    Err(e) => polled.messages.push(e.to_string()),
+                    Err(e) => polled.messages.push(e),
+                }
+            }
+            Tag::Precompute { photo } => {
+                if let Ok(Some(seg)) = o.result {
+                    self.segment_store_cache(photo, "subject", &seg);
                 }
             }
             Tag::People { photo, mask, op, person, parts } => {

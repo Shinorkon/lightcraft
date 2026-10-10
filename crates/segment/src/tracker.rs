@@ -135,7 +135,7 @@ impl Tracker {
                 grid.extend(image_fourier.encode((c as f32 + 0.5) / GRID as f32, (r as f32 + 0.5) / GRID as f32));
             }
         }
-        let image_pe = Tensor::from_vec(grid, (1, GRID * GRID, HIDDEN), &device)?;
+        let image_pe = Tensor::from_vec(grid, (1, GRID * GRID, HIDDEN), &device)?.to_dtype(vb.dtype())?;
         let t = md.pp("transformer");
         let mut blocks = Vec::new();
         for i in 0..2 {
@@ -205,7 +205,8 @@ impl Tracker {
             rows.extend(e.iter().enumerate().map(|(i, v)| v + point_embed.get(label * HIDDEN + i).copied().unwrap_or(0.0)));
         }
         rows.extend_from_slice(&not_a_point);
-        Ok(Tensor::from_vec(rows, (1, clicks.len() + 1, HIDDEN), &self.device)?)
+        let t = Tensor::from_vec(rows, (1, clicks.len() + 1, HIDDEN), &self.device)?.to_dtype(self.output_tokens.dtype())?;
+        Ok(t)
     }
 
     /// Predict masks for `clicks`. `multimask`: the three alternatives (best by predicted IoU is

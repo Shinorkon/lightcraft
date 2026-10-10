@@ -263,7 +263,7 @@ fn model<'a>(state: &'a mut State, shared: &Shared, dir: &std::path::Path) -> Re
         let _busy = Flag::raise(&shared.encoding);
         let t = web_time::Instant::now();
         let m = Sam3::load(dir).map_err(|e| e.to_string())?;
-        log::info!("SAM 3 loaded in {:?}", t.elapsed());
+        log::info!("SAM 3 loaded on {:?} in {:?}", m.device(), t.elapsed());
         state.model = Some((dir.to_path_buf(), m));
         shared.loaded.store(true, Ordering::SeqCst);
     }
@@ -298,7 +298,9 @@ fn encoded<'a>(state: &'a mut State, shared: &Shared, job: &mut Job) -> Result<(
         let m = state.model.as_mut().map(|(_, m)| m).ok_or("the model did not load")?;
         let t = web_time::Instant::now();
         let mut enc = m.encode(&input.rgb, input.w, input.h).map_err(|e| e.to_string())?;
-        m.prepare_clicks(&mut enc).map_err(|e| e.to_string())?;
+        if matches!(job.kind, Kind::Clicks(_) | Kind::Prepare) {
+            m.prepare_clicks(&mut enc).map_err(|e| e.to_string())?;
+        }
         log::info!("SAM 3 encoded {}×{} in {:?}", input.w, input.h, t.elapsed());
         state.cache = Some((job.key, enc));
     }
@@ -341,7 +343,7 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
                 }
             }
         }
-        Kind::Subject => Operation::Text("person, individual, human, subject".into()),
+        Kind::Subject => Operation::Text("person, clothing, hat, cap, headwear".into()),
         Kind::People { parts, .. } => Operation::Text(if parts.is_empty() { "person, portrait, human".into() } else { parts.join(", ") }),
         Kind::Refine { .. } => return Ok(None),
         #[cfg(test)]
@@ -436,7 +438,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
                 Ok(Some(SegMask::from_logits(224, &out.data)))
             } else {
                 let (m, enc) = encoded(state, shared, job)?;
-                let query = "person, individual, human, subject, clothing, accessories, item held";
+                let query = "person, clothing, hat, cap, headwear";
                 Ok(text_logits(m, enc, query)?.map(|l| SegMask::from_logits(side, &l)))
             }
         }
