@@ -87,9 +87,14 @@ pub const SINET_FILE: &str = "sinet.onnx";
 pub const MODNET_FILE: &str = "modnet.onnx";
 pub const BISENET_FILE: &str = "bisenet.onnx";
 
-/// Whether `dir` holds a usable checkpoint.
-pub fn is_model_dir(dir: &Path) -> bool {
+/// Whether `dir` holds the SAM 3 checkpoint files.
+pub fn is_sam3_dir(dir: &Path) -> bool {
     dir.join(WEIGHTS_FILE).is_file() && dir.join("vocab.json").is_file() && dir.join("merges.txt").is_file()
+}
+
+/// Whether `dir` holds any usable AI model checkpoint (SAM 3, SINet, or BiSeNet).
+pub fn is_model_dir(dir: &Path) -> bool {
+    is_sam3_dir(dir) || dir.join(SINET_FILE).is_file() || dir.join(BISENET_FILE).is_file()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -140,7 +145,7 @@ impl Sam3 {
     }
 
     pub fn load_on(dir: &Path, device: Device) -> Result<Self> {
-        if !is_model_dir(dir) {
+        if !is_sam3_dir(dir) {
             return Err(Error::Missing(dir.to_path_buf()));
         }
         let weights = weights::Weights::open(&dir.join(WEIGHTS_FILE))?;
