@@ -422,7 +422,8 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
                 Ok(Some(SegMask::from_logits(224, &out.data)))
             } else {
                 let (m, enc) = encoded(state, shared, job)?;
-                Ok(text_logits(m, enc, "main subject")?.map(|l| SegMask::from_logits(side, &l)))
+                let query = "person, people, portrait, human, subject, animal, object, foreground";
+                Ok(text_logits(m, enc, query)?.map(|l| SegMask::from_logits(side, &l)))
             }
         }
         Kind::Refine { mask_id: _ } => {
@@ -455,7 +456,11 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
                 Ok(Some(SegMask::from_logits(512, &combined)))
             } else {
                 let (m, enc) = encoded(state, shared, job)?;
-                let query = if parts.is_empty() { "person".to_string() } else { parts.join(" and ") };
+                let query = if parts.is_empty() {
+                    "person, people, portrait, human".to_string()
+                } else {
+                    parts.join(", ")
+                };
                 Ok(text_logits(m, enc, &query)?.map(|l| SegMask::from_logits(side, &l)))
             }
         }
