@@ -42,6 +42,17 @@ pub enum Kind {
     /// Panics (tests of the worker's recovery).
     #[cfg(test)]
     Panic,
+    /// Subject segmentation using SINet.
+    Subject,
+    /// Edge refinement using MODNet.
+    Refine {
+        mask_id: u32,
+    },
+    /// People face parsing.
+    People {
+        person: u32,
+        parts: Vec<String>,
+    },
 }
 
 /// One request.
@@ -327,6 +338,7 @@ fn remote_job(state: &mut State, shared: &Shared, job: &mut Job, endpoint: &str)
                 }
             }
         }
+        Kind::Subject | Kind::Refine { .. } | Kind::People { .. } => todo!("AI models logic"),
         #[cfg(test)]
         Kind::Panic => return Err("test panic request".into()),
     };
@@ -395,6 +407,7 @@ fn run_job(state: &mut State, shared: &Shared, job: &mut Job) -> Result<Option<S
             log::info!("SAM 3 detail pass ({}×{}) in {:?}", input.w, input.h, t.elapsed());
             Ok(logits.map(|l| SegMask::from_logits_in(side, &l, region)))
         }
+        Kind::Subject | Kind::Refine { .. } | Kind::People { .. } => todo!("AI models processing"),
     }
 }
 

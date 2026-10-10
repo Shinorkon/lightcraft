@@ -23,8 +23,8 @@ fn shape_from(kind: &str, p: &Value, c: &str) -> Result<MaskShape> {
             invert: bool_or(p, "invert", false),
         },
         "sky" => MaskShape::Sky,
-        "subject" => MaskShape::Subject,
-        "background" => MaskShape::Background,
+        "subject" => MaskShape::Subject { seg: None },
+        "background" => MaskShape::Background { seg: None },
         "luminanceRange" => MaskShape::LuminanceRange {
             lo: f64_or(p, "lo", 0.6),
             hi: f64_or(p, "hi", 1.0),

@@ -64,6 +64,10 @@ pub(crate) enum Tag {
     NewPrompt { photo: PhotoId, mask: Option<u32>, op: String, name: Option<String>, text: String },
     /// A zoomed-in pass for a component, computed from `shape` (without its detail).
     Detail { photo: PhotoId, mask: u32, comp: usize, shape: MaskShape },
+    /// Subject segmentation using SINet.
+    Subject { photo: PhotoId, mask: Option<u32>, op: String, name: Option<String>, background: bool },
+    /// People face parsing.
+    People { photo: PhotoId, mask: Option<u32>, op: String, person: u32, parts: Vec<String> },
 }
 
 /// The model input: 8-bit RGB.
@@ -684,6 +688,7 @@ impl Session {
                     Err(e) => log::warn!("AI mask detail: {e}"),
                 }
             }
+            Tag::Subject { .. } | Tag::People { .. } => todo!("Session apply AI models"),
         }
     }
 }
